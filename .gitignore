@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# OAuth credentials (stored as base64 in .env instead)
+scripts/credentials.json
+scripts/token.json
+credentials.json
+token.json
