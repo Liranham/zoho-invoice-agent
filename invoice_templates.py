@@ -145,11 +145,13 @@ class InvoiceGenerator:
         line_items, notes = template_class.generate_line_items(wire_amount, client_name)
         invoice_number = template_class.format_invoice_number(template_class.PREFIX, wire_date)
 
+        # Add reference number to notes (Zoho auto-generates invoice numbers)
+        full_notes = f"Reference: {invoice_number}\n\n{notes}"
+
         return {
             "customer_id": customer_id,
             "date": wire_date,
-            "invoice_number": invoice_number,
             "line_items": line_items,
-            "notes": notes,
+            "notes": full_notes,
             "payment_terms": 0,  # Due immediately
         }

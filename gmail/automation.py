@@ -43,26 +43,18 @@ class InvoiceAutomation:
         self.invoice_service = invoice_service
         self.telegram = telegram_notifier
 
-    def process_message(self, message_id: str) -> bool:
+    def process_transfer(self, transfer: WireTransfer) -> bool:
         """
-        Process a single Gmail message and create invoice.
+        Process a wire transfer and create invoice.
 
         Args:
-            message_id: Gmail message ID
+            transfer: WireTransfer object
 
         Returns:
             True if invoice created successfully
         """
-        logger.info(f"Processing message {message_id}")
-
-        # Get and parse message
-        transfer = self.watcher.get_message(message_id)
-        if not transfer:
-            logger.warning(f"Failed to parse message {message_id}")
-            return False
-
         logger.info(
-            f"Parsed transfer: ${transfer.amount:.2f} from {transfer.sender_name}"
+            f"Processing transfer: ${transfer.amount:.2f} from {transfer.sender_name}"
         )
 
         # Match to client
@@ -101,6 +93,10 @@ class InvoiceAutomation:
                 f"Created invoice: {invoice.invoice_number} | ${invoice.total:.2f}"
             )
 
+            # Mark email as processed to prevent duplicates
+            if transfer.message_id:
+                self.watcher.mark_as_processed(transfer.message_id)
+
             # Send confirmation
             if self.telegram:
                 self.telegram.send_message(
@@ -123,6 +119,26 @@ class InvoiceAutomation:
                     f"Error: {str(e)}"
                 )
             return False
+
+    def process_message(self, message_id: str) -> bool:
+        """
+        Process a single Gmail message and create invoice.
+
+        Args:
+            message_id: Gmail message ID
+
+        Returns:
+            True if invoice created successfully
+        """
+        logger.info(f"Processing message {message_id}")
+
+        # Get and parse message
+        transfer = self.watcher.get_message(message_id)
+        if not transfer:
+            logger.warning(f"Failed to parse message {message_id}")
+            return False
+
+        return self.process_transfer(transfer)
 
     def _match_client(self, sender_name: str) -> Optional[str]:
         """

@@ -22,6 +22,7 @@ class WireTransfer:
     currency: str
     sender_name: str
     date: str  # YYYY-MM-DD
+    message_id: str = ""  # Gmail message ID for tracking
 
 
 class WiseEmailParser:

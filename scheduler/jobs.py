@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 class JobScheduler:
-    def __init__(self, invoice_service: InvoiceService, settings: Settings):
+    def __init__(self, invoice_service: InvoiceService, settings: Settings, gmail_automation=None):
         self.invoice_service = invoice_service
         self.settings = settings
+        self.gmail_automation = gmail_automation
         self._running = False
 
     def setup_jobs(self):
@@ -61,8 +62,24 @@ class JobScheduler:
             logger.warning("Unrecognized cron format: %s", cron)
 
     def _recurring_job(self):
-        """Override this or configure via settings to define what invoices to create."""
-        logger.info("Recurring invoice job triggered — no template configured yet")
+        """Check Gmail for new wire transfer emails and create invoices."""
+        logger.info("Daily Gmail check triggered")
+
+        if not self.gmail_automation:
+            logger.warning("Gmail automation not configured")
+            return
+
+        try:
+            # Poll recent messages
+            transfers = self.gmail_automation.watcher.poll_recent_messages(max_results=10)
+            logger.info(f"Found {len(transfers)} wire transfer emails")
+
+            for transfer in transfers:
+                # Process each transfer (automation handles duplicate checking)
+                self.gmail_automation.process_transfer(transfer)
+
+        except Exception as e:
+            logger.exception(f"Failed to process Gmail emails: {e}")
 
     def _monthly_check(self):
         """Run the recurring job only on the configured day of the month."""

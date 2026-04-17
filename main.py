@@ -136,9 +136,7 @@ def _process_recent_emails():
         if _gmail_automation:
             transfers = _gmail_automation.watcher.poll_recent_messages(max_results=5)
             for transfer in transfers:
-                logger.info(f"Processing transfer: ${transfer.amount} from {transfer.sender_name}")
-                # Process each message (automation will check for duplicates)
-                # For now, we just log - full implementation would track processed IDs
+                _gmail_automation.process_transfer(transfer)
     except Exception as e:
         logger.exception(f"Failed to process emails: {e}")
 
@@ -201,7 +199,7 @@ def cmd_server():
             logger.info("Gmail automation enabled for label: %s", settings.gmail.label_name)
 
         if settings.scheduler.enabled:
-            scheduler = JobScheduler(_invoice_service, settings)
+            scheduler = JobScheduler(_invoice_service, settings, _gmail_automation)
             scheduler.start()
 
         logger.info("Zoho Invoice Agent running. Waiting for requests...")

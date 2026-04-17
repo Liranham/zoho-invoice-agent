@@ -63,6 +63,7 @@ class InvoiceService:
         date: str = "",
         payment_terms: int = 30,
         notes: str = "",
+        invoice_number: str = "",
     ) -> Invoice:
         body = {
             "customer_id": customer_id,
@@ -73,6 +74,8 @@ class InvoiceService:
             body["date"] = date
         if notes:
             body["notes"] = notes
+        if invoice_number:
+            body["invoice_number"] = invoice_number
 
         data = self.client.post("invoices", json=body)
         inv = data.get("invoice", data)

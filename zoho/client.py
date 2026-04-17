@@ -61,6 +61,8 @@ class ZohoClient:
                 self.auth._refresh()
                 continue
 
+            if not resp.ok:
+                logger.error(f"HTTP {resp.status_code}: {resp.text}")
             resp.raise_for_status()
             data = resp.json()
 
