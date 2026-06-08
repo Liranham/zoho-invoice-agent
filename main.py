@@ -184,7 +184,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
-            from telegram.inbox import process_update
+            from tg_notify.inbox import process_update
             threading.Thread(
                 target=process_update,
                 args=(body, _wise_automation, _telegram_notifier),
@@ -262,7 +262,7 @@ def cmd_server():
 
         # Telegram (shared by Gmail + Wise flows)
         if settings.telegram.enabled:
-            from telegram.notifier import TelegramNotifier
+            from tg_notify.notifier import TelegramNotifier
             _telegram_notifier = TelegramNotifier(
                 bot_token=settings.telegram.bot_token,
                 chat_id=settings.telegram.chat_id,
