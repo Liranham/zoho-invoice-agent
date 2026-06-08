@@ -305,5 +305,51 @@ def db_sync_zoho_org_ids():
         click.echo("All entities already in sync.")
 
 
+# -----------------------------------------------------------------------------
+# Sync workers
+# -----------------------------------------------------------------------------
+
+@cli.group()
+def sync():
+    """Sync external systems into Goldman."""
+
+
+@sync.command("zoho-contacts")
+@click.option("--entity", required=True, help="Entity slug to sync")
+def sync_zoho_contacts_cmd(entity):
+    """Pull Zoho contacts for this entity into goldman.clients + goldman.vendors."""
+    from goldman.sync.zoho_contacts import sync_zoho_contacts
+    from goldman.zoho import contact_service_for
+    from goldman_db.clients import ClientRepository
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from goldman_db.vendors import VendorRepository
+
+    entity_slug = entity.lower()
+
+    with app_conn() as conn:
+        repo = EntityRepository(conn)
+        ent = repo.get_by_slug(entity_slug)
+        if not ent:
+            raise click.ClickException(f"Unknown entity: {entity_slug}")
+        contact_svc = contact_service_for(entity_slug, entity_repo=repo)
+        clients_repo = ClientRepository(conn)
+        vendors_repo = VendorRepository(conn)
+
+        # Phase 1: route by Zoho's contact_type field. Zoho's Contact dataclass
+        # in this repo doesn't expose contact_type yet — we treat everyone
+        # as a client. Phase 3 (vendor email intake) will refine this.
+        summary = sync_zoho_contacts(
+            contact_service=contact_svc,
+            entity_id=ent.id,
+            clients_repo=clients_repo,
+            vendors_repo=vendors_repo,
+            is_vendor=lambda c: False,
+        )
+
+    click.echo(f"Synced for {entity_slug}: "
+               f"{summary['clients']} clients, {summary['vendors']} vendors.")
+
+
 if __name__ == "__main__":
     cli()
