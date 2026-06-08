@@ -74,6 +74,24 @@ class GmailSettings:
 
 
 @dataclass
+class WiseSettings:
+    """Wise direct-API integration."""
+
+    enabled: bool = False
+    api_token: str = ""
+    private_key_b64: str = ""
+    profile_id: str = ""
+    webhook_base_url: str = ""
+
+    def __post_init__(self):
+        self.enabled = os.getenv("WISE_ENABLED", "false").lower() == "true"
+        self.api_token = os.getenv("WISE_API_TOKEN", "")
+        self.private_key_b64 = os.getenv("WISE_PRIVATE_KEY_B64", "")
+        self.profile_id = os.getenv("WISE_PROFILE_ID", "")
+        self.webhook_base_url = os.getenv("WISE_WEBHOOK_BASE_URL", "")
+
+
+@dataclass
 class TelegramSettings:
     """Telegram bot configuration for notifications."""
 
@@ -88,6 +106,25 @@ class TelegramSettings:
 
 
 @dataclass
+class GoldmanDbSettings:
+    """Goldman Postgres (Supabase) configuration.
+
+    Two roles:
+    - admin_url: super-admin / service-role connection used by migrations and
+      one-off admin scripts. Should NOT be used at runtime.
+    - app_url: connection authenticated as goldman_app — restricted role with
+      REVOKE ALL on public.*. This is what Goldman's code uses at runtime.
+    """
+
+    admin_url: str = ""
+    app_url: str = ""
+
+    def __post_init__(self):
+        self.admin_url = os.getenv("GOLDMAN_DB_ADMIN_URL", "")
+        self.app_url = os.getenv("GOLDMAN_DB_APP_URL", "")
+
+
+@dataclass
 class Settings:
     """Root settings container."""
 
@@ -96,6 +133,8 @@ class Settings:
     scheduler: SchedulerSettings = field(default_factory=SchedulerSettings)
     gmail: GmailSettings = field(default_factory=GmailSettings)
     telegram: TelegramSettings = field(default_factory=TelegramSettings)
+    wise: WiseSettings = field(default_factory=WiseSettings)
+    goldman_db: GoldmanDbSettings = field(default_factory=GoldmanDbSettings)
 
     def __post_init__(self):
         pass
