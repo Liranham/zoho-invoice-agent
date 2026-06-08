@@ -229,6 +229,164 @@ def onboard(entity):
     run_onboarding(entity.lower())
 
 
+@cli.command("remember")
+@click.option("--entity", default="amzg",
+              help="Entity slug; 'global' for cross-entity facts")
+@click.option("--kind", required=True,
+              type=click.Choice(["target", "preference", "constraint",
+                                 "commitment", "event", "decision", "note"]),
+              help="Fact kind")
+@click.argument("text")
+def remember_cmd(entity, kind, text):
+    """Record a free-floating fact for an entity."""
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from goldman_db.facts import FactRepository
+
+    with app_conn() as conn:
+        entity_id = None
+        if entity != "global":
+            ent = EntityRepository(conn).get_by_slug(entity)
+            if not ent:
+                raise click.ClickException(f"Unknown entity: {entity}")
+            entity_id = ent.id
+        facts = FactRepository(conn)
+        new_id = facts.upsert(
+            entity_id=entity_id,
+            kind=kind,
+            fact=text,
+            source="user_explicit",
+        )
+    click.echo(f"  ok stored fact {new_id}")
+
+
+@cli.command("recall")
+@click.option("--entity", default=None,
+              help="Restrict search to this entity (omit = cross-entity)")
+@click.option("--top", default=10, type=int)
+@click.argument("question")
+def recall_cmd(entity, top, question):
+    """Hybrid search (vector + keyword) across Goldman's memory.
+
+    Returns top results from facts + conversation turns + document chunks
+    with their source pointers.
+    """
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from goldman_db.hybrid_search import hybrid_search
+    from goldman.embeddings import EmbeddingClient
+
+    embedder = EmbeddingClient()
+    query_vec = embedder.embed_batch([question])[0]
+
+    with app_conn() as conn:
+        entity_id = None
+        if entity:
+            ent = EntityRepository(conn).get_by_slug(entity.lower())
+            if not ent:
+                raise click.ClickException(f"Unknown entity: {entity}")
+            entity_id = ent.id
+
+        results = hybrid_search(
+            conn,
+            query_embedding=query_vec,
+            query_text=question,
+            entity_id=entity_id,
+            top_n=top,
+        )
+
+    if not results:
+        click.echo("(no results)")
+        return
+
+    for i, r in enumerate(results, 1):
+        click.echo(f"\n{i}. [{r.source_type}] score={r.score:.3f}")
+        click.echo(f"   {r.excerpt[:200]}")
+        if r.metadata:
+            click.echo(f"   meta: {r.metadata}")
+
+
+# -----------------------------------------------------------------------------
+# Documents
+# -----------------------------------------------------------------------------
+
+@cli.group()
+def document():
+    """Goldman document store."""
+
+
+@document.command("upload")
+@click.option("--entity", required=True, help="Entity slug")
+@click.argument("file", type=click.Path(exists=True))
+def document_upload(entity, file):
+    """Upload a document (txt/md/pdf), summarise via Claude, chunk + insert."""
+    from pathlib import Path
+    from goldman.documents import upload_document
+    from goldman.llm import DocumentSummariser
+    from goldman.storage import SupabaseStorage
+    from goldman_db.connection import app_conn
+    from goldman_db.documents import DocumentChunkRepository, DocumentRepository
+    from goldman_db.entities import EntityRepository
+
+    storage = SupabaseStorage()
+    summariser = DocumentSummariser()
+
+    with app_conn() as conn:
+        ent = EntityRepository(conn).get_by_slug(entity.lower())
+        if not ent:
+            raise click.ClickException(f"Unknown entity: {entity}")
+        doc_repo = DocumentRepository(conn)
+        chunk_repo = DocumentChunkRepository(conn)
+
+        result = upload_document(
+            file_path=Path(file),
+            entity_id=ent.id,
+            entity_slug=ent.slug,
+            storage=storage,
+            doc_repo=doc_repo,
+            chunk_repo=chunk_repo,
+            summariser=summariser,
+            bucket="goldman-documents",
+        )
+
+    click.echo(
+        f"  ok uploaded {Path(file).name}: "
+        f"doc_id={result.document_id}, chunks={result.chunk_count}, "
+        f"path={result.storage_path}"
+    )
+    click.echo("  -> run `db embed-pending` to embed the chunks for retrieval.")
+
+
+@document.command("list")
+@click.option("--entity", default=None)
+def document_list(entity):
+    """List documents (all entities or one)."""
+    from goldman_db.connection import app_conn
+    from goldman_db.documents import DocumentRepository
+    from goldman_db.entities import EntityRepository
+
+    with app_conn() as conn:
+        doc_repo = DocumentRepository(conn)
+        if entity:
+            ent = EntityRepository(conn).get_by_slug(entity.lower())
+            if not ent:
+                raise click.ClickException(f"Unknown entity: {entity}")
+            docs = doc_repo.list_by_entity(ent.id)
+        else:
+            docs = doc_repo.list_all()
+
+    if not docs:
+        click.echo("(no documents)")
+        return
+
+    for d in docs:
+        click.echo(f"  {d.filename}")
+        click.echo(f"    id:   {d.id}")
+        click.echo(f"    path: {d.original_storage_path}")
+        if d.summary:
+            click.echo(f"    summary: {d.summary[:150]}")
+
+
 # -----------------------------------------------------------------------------
 # Goldman DB operations
 # -----------------------------------------------------------------------------
@@ -303,6 +461,37 @@ def db_sync_zoho_org_ids():
         click.echo(f"Updated {updates} entit{'y' if updates == 1 else 'ies'}.")
     else:
         click.echo("All entities already in sync.")
+
+
+@db.command("embed-pending")
+@click.option("--batch-size", default=50, type=int)
+def db_embed_pending(batch_size):
+    """Embed all rows with NULL embeddings.
+
+    Hits facts + conversation_turns + document_chunks.
+    """
+    from goldman.embeddings import EmbeddingClient, embed_pending_in
+    from goldman_db.connection import app_conn
+    from goldman_db.conversation_turns import ConversationTurnRepository
+    from goldman_db.documents import DocumentChunkRepository
+    from goldman_db.facts import FactRepository
+
+    embedder = EmbeddingClient()
+    with app_conn() as conn:
+        summary = embed_pending_in(
+            facts_repo=FactRepository(conn),
+            turns_repo=ConversationTurnRepository(conn),
+            chunks_repo=DocumentChunkRepository(conn),
+            embedder=embedder,
+            batch_size=batch_size,
+        )
+
+    click.echo(
+        f"  ok embedded: "
+        f"{summary['facts']} facts, "
+        f"{summary['turns']} turns, "
+        f"{summary['chunks']} chunks."
+    )
 
 
 # -----------------------------------------------------------------------------
