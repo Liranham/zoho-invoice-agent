@@ -1,0 +1,7 @@
+{
+  "name": "goldman",
+  "description": "Goldman — CFO of AMZ Expert Global Limited. Slash commands talk to the Render-hosted Goldman service over HTTPS.",
+  "version": "0.1.0",
+  "author": { "name": "Liran Hamburg" },
+  "license": "UNLICENSED"
+}
