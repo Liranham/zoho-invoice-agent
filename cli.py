@@ -215,6 +215,20 @@ def items(entity):
         click.echo(f"{item.item_id:<20} {item.name:<30} {item.rate:>12.2f}")
 
 
+@cli.command("onboard")
+@click.option("--entity", required=True,
+              help="Entity slug to onboard (amzg / seo)")
+def onboard(entity):
+    """Conversational onboarding for a single entity.
+
+    Opens your editor for a brain-dump, parses it with Claude, writes the
+    structured facts into Goldman's DB, then asks targeted questions for
+    anything still missing.
+    """
+    from goldman.onboarding.flow import run_onboarding
+    run_onboarding(entity.lower())
+
+
 # -----------------------------------------------------------------------------
 # Goldman DB operations
 # -----------------------------------------------------------------------------
