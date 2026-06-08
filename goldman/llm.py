@@ -63,3 +63,38 @@ class GoldmanLLM:
             f"Claude did not call the tool {tool_name!r}; "
             f"stop_reason={response.stop_reason!r}"
         )
+
+
+SUMMARY_MODEL = "claude-haiku-4-5-20251001"
+
+
+class DocumentSummariser:
+    """One-shot two-sentence summary via Claude Haiku."""
+
+    def __init__(self, *, model: str = SUMMARY_MODEL):
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise LLMConfigError(
+                "ANTHROPIC_API_KEY not set. DocumentSummariser needs it."
+            )
+        self._client = anthropic.Anthropic(api_key=api_key)
+        self.model = model
+
+    def summarise(self, text: str, *, max_chars: int = 12000) -> str:
+        clipped = text if len(text) <= max_chars else text[:max_chars]
+        resp = self._client.messages.create(
+            model=self.model,
+            max_tokens=200,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Summarise this document in 2-3 sentences. Focus on what "
+                    "it is and key points. Output the summary only, no preamble.\n\n"
+                    + clipped
+                ),
+            }],
+        )
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                return block.text.strip()
+        return ""
