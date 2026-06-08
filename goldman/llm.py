@@ -98,3 +98,63 @@ class DocumentSummariser:
             if getattr(block, "type", None) == "text":
                 return block.text.strip()
         return ""
+
+
+# Document/image extraction (Phase 3)
+def _document_extract_with_tool(client, model, max_tokens, document_path,
+                                 system, tool_name, tool_schema):
+    """Internal helper — exists at module level for testability."""
+    import base64
+    import mimetypes
+    from pathlib import Path
+    path = Path(document_path)
+    mime, _ = mimetypes.guess_type(path.name)
+    mime = mime or "application/octet-stream"
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+
+    if mime == "application/pdf":
+        doc_block = {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf",
+                        "data": b64},
+        }
+    elif mime.startswith("image/"):
+        doc_block = {
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": b64},
+        }
+    else:
+        doc_block = {"type": "text",
+                     "text": path.read_text(errors="replace")}
+
+    response = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": [doc_block]}],
+        tools=[{
+            "name": tool_name,
+            "description": "Submit the structured extraction.",
+            "input_schema": tool_schema,
+        }],
+        tool_choice={"type": "tool", "name": tool_name},
+    )
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == tool_name:
+            return dict(block.input)
+    raise RuntimeError(
+        f"Claude did not call the tool {tool_name!r}; "
+        f"stop_reason={response.stop_reason!r}"
+    )
+
+
+# Bind it as a method on GoldmanLLM
+def _extract_from_document(self, *, document_path, system, tool_name, tool_schema):
+    """Send a file as a document/image content block + a tool. Return tool input."""
+    return _document_extract_with_tool(
+        self._client, self.model, self.max_tokens,
+        document_path, system, tool_name, tool_schema,
+    )
+
+
+GoldmanLLM.extract_from_document = _extract_from_document
