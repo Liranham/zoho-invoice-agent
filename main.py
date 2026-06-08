@@ -35,6 +35,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/health"):
             self._json_response(200, {"status": "ok", "service": "goldman"})
+        elif self.path.startswith("/v1/"):
+            self._handle_api(method="GET")
         elif self.path.startswith("/invoices"):
             self._handle_list_invoices()
         else:
@@ -43,6 +45,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/invoices/create":
             self._handle_create_invoice()
+        elif self.path.startswith("/v1/"):
+            self._handle_api(method="POST")
         elif self.path == "/webhook/gmail":
             self._handle_gmail_webhook()
         elif self.path == "/webhook/wise":
@@ -51,6 +55,52 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._handle_telegram_webhook()
         else:
             self._json_response(404, {"error": "not found"})
+
+    def _handle_api(self, method: str):
+        from urllib.parse import urlparse, parse_qs
+        from goldman.api.auth import is_authorized
+        from goldman.api.endpoints import (
+            handle_who, handle_recall, handle_remember,
+            handle_pending_bills, handle_status,
+        )
+
+        if not is_authorized(dict(self.headers)):
+            self._json_response(401, {"error": "unauthorized"})
+            return
+
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+
+        body = {}
+        if method == "POST":
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                if content_length:
+                    raw = self.rfile.read(content_length)
+                    body = json.loads(raw.decode("utf-8"))
+            except Exception as e:
+                self._json_response(400, {"error": f"bad json: {e}"})
+                return
+
+        try:
+            if path == "/v1/who":
+                code, payload = handle_who(query=query, body=body)
+            elif path == "/v1/recall":
+                code, payload = handle_recall(query=query, body=body)
+            elif path == "/v1/remember":
+                code, payload = handle_remember(query=query, body=body)
+            elif path == "/v1/bills/pending":
+                code, payload = handle_pending_bills(query=query, body=body)
+            elif path == "/v1/status":
+                code, payload = handle_status(query=query, body=body)
+            else:
+                code, payload = 404, {"error": f"unknown api path: {path}"}
+        except Exception as e:
+            logger.exception("API error: %s", e)
+            code, payload = 500, {"error": str(e)}
+
+        self._json_response(code, payload)
 
     def _handle_list_invoices(self):
         if not _invoice_services:
