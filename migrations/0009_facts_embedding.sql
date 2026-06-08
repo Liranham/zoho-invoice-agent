@@ -13,3 +13,14 @@ CREATE INDEX IF NOT EXISTS idx_goldman_facts_embedding
 -- Full-text search index for the keyword leg of hybrid search.
 CREATE INDEX IF NOT EXISTS idx_goldman_facts_fts
     ON goldman.facts USING gin (to_tsvector('english', fact));
+
+-- Phase 1's facts_live view was created with SELECT f.* which Postgres
+-- materialised at creation time. Drop + recreate to pick up the new
+-- embedding + conflict_with columns.
+DROP VIEW IF EXISTS goldman.facts_live;
+CREATE VIEW goldman.facts_live AS
+SELECT f.*
+FROM goldman.facts f
+WHERE NOT EXISTS (
+    SELECT 1 FROM goldman.facts f2 WHERE f2.supersedes_id = f.id
+);

@@ -93,8 +93,8 @@ keyword_ranked AS (
 -- excerpt/entity_id/metadata, so MAX() / array_agg()[1] are safe picks.
 combined AS (
     SELECT source_type, source_id,
-           MAX(excerpt) AS excerpt,
-           MAX(entity_id) AS entity_id,
+           (array_agg(excerpt))[1] AS excerpt,
+           (array_agg(entity_id))[1] AS entity_id,
            (array_agg(metadata))[1] AS metadata,
            SUM(1.0 / (p_rrf_k + rk))::FLOAT AS total_score
     FROM (
