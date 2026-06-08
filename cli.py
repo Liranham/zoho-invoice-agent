@@ -351,5 +351,29 @@ def sync_zoho_contacts_cmd(entity):
                f"{summary['clients']} clients, {summary['vendors']} vendors.")
 
 
+@cli.command("who")
+def who_cmd():
+    """Print Goldman's company brain: every entity + its registrations,
+    bank accounts, top clients and vendors. Uses the goldman_app DB role."""
+    from goldman.who import build_who_view, render_who
+    from goldman_db.bank_accounts import BankAccountRepository
+    from goldman_db.clients import ClientRepository
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from goldman_db.tax_registrations import TaxRegistrationRepository
+    from goldman_db.vendors import VendorRepository
+
+    with app_conn() as conn:
+        summaries = build_who_view(
+            entities_repo=EntityRepository(conn),
+            tax_repo=TaxRegistrationRepository(conn),
+            bank_repo=BankAccountRepository(conn),
+            clients_repo=ClientRepository(conn),
+            vendors_repo=VendorRepository(conn),
+        )
+
+    click.echo(render_who(summaries))
+
+
 if __name__ == "__main__":
     cli()
