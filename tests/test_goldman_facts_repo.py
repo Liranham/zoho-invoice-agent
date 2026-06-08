@@ -56,3 +56,56 @@ def test_list_live_by_entity():
     assert facts[0].kind == "decision"
     sql = str(cur.execute.call_args)
     assert "facts_live" in sql
+
+
+def test_list_pending_embedding():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = []
+
+    repo = FactRepository(conn)
+    repo.list_pending_embedding(limit=10)
+
+    sql = str(cur.execute.call_args)
+    assert "embedding IS NULL" in sql
+    assert "LIMIT" in sql
+
+
+def test_set_embedding():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    repo = FactRepository(conn)
+    fid = uuid4()
+
+    repo.set_embedding(fid, [0.1, 0.2, 0.3])
+
+    sql = str(cur.execute.call_args)
+    assert "UPDATE goldman.facts SET embedding" in sql
+
+
+def test_find_potential_conflicts_uses_cosine_threshold():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = []
+
+    repo = FactRepository(conn)
+    fid = uuid4()
+
+    repo.find_potential_conflicts(fid, similarity_threshold=0.85)
+
+    sql = str(cur.execute.call_args)
+    assert "<=>" in sql
+    assert "0.15" in sql or "0.85" in sql
+
+
+def test_mark_conflict_writes_array_on_both_rows():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    repo = FactRepository(conn)
+    a = uuid4(); b = uuid4()
+
+    repo.mark_conflict(a, b)
+
+    assert cur.execute.call_count == 2
+    sqls = [str(c) for c in cur.execute.call_args_list]
+    assert any("conflict_with" in s for s in sqls)

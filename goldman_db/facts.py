@@ -84,3 +84,71 @@ class FactRepository:
                 (entity_id,),
             )
             return [_row(r) for r in cur.fetchall()]
+
+    def list_pending_embedding(self, *, limit: int = 50) -> list:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_COLS} FROM goldman.facts "
+                f"WHERE embedding IS NULL ORDER BY created_at LIMIT %s",
+                (limit,),
+            )
+            return [_row(r) for r in cur.fetchall()]
+
+    def set_embedding(self, fact_id, embedding: list) -> None:
+        vec_str = "[" + ",".join(str(x) for x in embedding) + "]"
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE goldman.facts SET embedding = %s::vector WHERE id = %s",
+                (vec_str, fact_id),
+            )
+
+    def find_potential_conflicts(
+        self, fact_id, *, similarity_threshold: float = 0.85, limit: int = 5,
+    ) -> list:
+        """Return facts whose embeddings are very close to this fact's but
+        whose content_hash differs (suggesting contradictory statements about
+        the same topic). Caller decides whether to mark_conflict.
+        """
+        distance_threshold = 1.0 - similarity_threshold
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {_COLS} FROM goldman.facts other
+                WHERE other.embedding IS NOT NULL
+                  AND other.id != %s
+                  AND other.content_hash != (
+                      SELECT content_hash FROM goldman.facts WHERE id = %s
+                  )
+                  AND (
+                      other.embedding <=> (
+                          SELECT embedding FROM goldman.facts WHERE id = %s
+                      )
+                  ) < {distance_threshold:.3f}
+                ORDER BY other.embedding <=> (
+                    SELECT embedding FROM goldman.facts WHERE id = %s
+                )
+                LIMIT %s
+                """,
+                (fact_id, fact_id, fact_id, fact_id, limit),
+            )
+            return [_row(r) for r in cur.fetchall()]
+
+    def mark_conflict(self, fact_a, fact_b) -> None:
+        """Add each fact's id to the other's conflict_with array. Idempotent."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE goldman.facts
+                SET conflict_with = ARRAY(SELECT DISTINCT unnest(conflict_with || %s::uuid))
+                WHERE id = %s
+                """,
+                (fact_b, fact_a),
+            )
+            cur.execute(
+                """
+                UPDATE goldman.facts
+                SET conflict_with = ARRAY(SELECT DISTINCT unnest(conflict_with || %s::uuid))
+                WHERE id = %s
+                """,
+                (fact_a, fact_b),
+            )
