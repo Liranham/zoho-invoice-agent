@@ -845,6 +845,43 @@ def bill_retry(bill_id):
     )
 
 
+# -----------------------------------------------------------------------------
+# Bot (Phase 4)
+# -----------------------------------------------------------------------------
+
+@cli.group("bot")
+def bot_group():
+    """Goldman Telegram bot operations."""
+
+
+@bot_group.command("run")
+def bot_run_cmd():
+    """Start the Goldman Telegram bot (long-polling, blocking)."""
+    from goldman.bot.app import run_bot
+    run_bot()
+
+
+@bot_group.command("ping")
+def bot_ping_cmd():
+    """Send a test ping via the bot token (no polling)."""
+    import os
+    import requests
+    token = os.getenv("GOLDMAN_TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("GOLDMAN_TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        raise click.ClickException(
+            "GOLDMAN_TELEGRAM_BOT_TOKEN and GOLDMAN_TELEGRAM_CHAT_ID required."
+        )
+    r = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={"chat_id": chat_id, "text": "Goldman bot ping ok"},
+    )
+    if r.ok:
+        click.echo(f"  ok: {r.json().get('result', {}).get('message_id')}")
+    else:
+        click.echo(f"  failed: {r.status_code} {r.text}")
+
+
 @cli.command("who")
 def who_cmd():
     """Print Goldman's company brain: every entity + its registrations,
