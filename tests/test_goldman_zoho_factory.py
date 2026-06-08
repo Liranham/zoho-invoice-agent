@@ -39,6 +39,10 @@ def _entity_repo_with(slug, cred_key, org_id):
         base_currency="USD",
         zoho_organization_id=org_id,
         zoho_credential_key=cred_key,
+        fiscal_year_end=None,
+        registered_address=None,
+        company_number=None,
+        incorporation_date=None,
     )
     return fake
 
