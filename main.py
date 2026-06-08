@@ -315,6 +315,17 @@ def cmd_server():
             )
             scheduler.start()
 
+        # Goldman Telegram bot (Phase 4)
+        if os.environ.get("GOLDMAN_TELEGRAM_BOT_TOKEN"):
+            try:
+                from goldman.bot.app import run_bot
+                threading.Thread(
+                    target=run_bot, daemon=True, name="goldman-bot",
+                ).start()
+                logger.info("Goldman bot thread started")
+            except Exception as e:
+                logger.exception("Goldman bot failed to start: %s", e)
+
         logger.info("Goldman running. Waiting for requests...")
         threading.Event().wait()  # block forever
 
