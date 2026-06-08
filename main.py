@@ -20,9 +20,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# Global references for HTTP handler to use
-_invoice_service = None
+# Global references for HTTP handler to use.
+# _invoice_services is keyed by entity slug; pre-populated at startup.
+_invoice_services: dict = {}  # slug -> InvoiceService
 _gmail_automation = None
+_wise_automation = None
+_wise_signature_verifier = None
+_telegram_notifier = None
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -30,7 +34,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ("/", "/health"):
-            self._json_response(200, {"status": "ok", "service": "zoho-invoice-agent"})
+            self._json_response(200, {"status": "ok", "service": "goldman"})
         elif self.path.startswith("/invoices"):
             self._handle_list_invoices()
         else:
@@ -41,18 +45,32 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._handle_create_invoice()
         elif self.path == "/webhook/gmail":
             self._handle_gmail_webhook()
+        elif self.path == "/webhook/wise":
+            self._handle_wise_webhook()
+        elif self.path == "/webhook/telegram":
+            self._handle_telegram_webhook()
         else:
             self._json_response(404, {"error": "not found"})
 
     def _handle_list_invoices(self):
-        if not _invoice_service:
+        if not _invoice_services:
             self._json_response(503, {"error": "service not ready"})
             return
         try:
-            invoices = _invoice_service.list_invoices()
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            entity_slug = (qs.get("entity") or ["amzg"])[0].lower()
+            svc = _invoice_services.get(entity_slug)
+            if not svc:
+                self._json_response(
+                    400, {"error": f"unknown entity: {entity_slug}"}
+                )
+                return
+            invoices = svc.list_invoices()
             self._json_response(
                 200,
                 {
+                    "entity": entity_slug,
                     "invoices": [
                         {
                             "invoice_number": inv.invoice_number,
@@ -62,20 +80,27 @@ class _HealthHandler(BaseHTTPRequestHandler):
                             "customer": inv.customer_name,
                         }
                         for inv in invoices
-                    ]
+                    ],
                 },
             )
         except Exception as e:
             self._json_response(500, {"error": str(e)})
 
     def _handle_create_invoice(self):
-        if not _invoice_service:
+        if not _invoice_services:
             self._json_response(503, {"error": "service not ready"})
             return
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(content_length)) if content_length else {}
-            inv = _invoice_service.create_invoice(
+            entity_slug = (body.get("entity") or "amzg").lower()
+            svc = _invoice_services.get(entity_slug)
+            if not svc:
+                self._json_response(
+                    400, {"error": f"unknown entity: {entity_slug}"}
+                )
+                return
+            inv = svc.create_invoice(
                 customer_id=body["customer_id"],
                 line_items=body["line_items"],
                 date=body.get("date", ""),
@@ -83,6 +108,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._json_response(
                 201,
                 {
+                    "entity": entity_slug,
                     "invoice_id": inv.invoice_id,
                     "invoice_number": inv.invoice_number,
                     "total": inv.total,
@@ -120,6 +146,55 @@ class _HealthHandler(BaseHTTPRequestHandler):
             logger.exception(f"Gmail webhook error: {e}")
             self._json_response(500, {"error": str(e)})
 
+    def _handle_wise_webhook(self):
+        """Verify and process a Wise webhook delivery."""
+        if not _wise_automation or not _wise_signature_verifier:
+            self._json_response(503, {"error": "wise automation not enabled"})
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw_body = self.rfile.read(content_length) if content_length else b""
+            signature = self.headers.get("X-Signature-SHA256", "")
+
+            if not _wise_signature_verifier.verify(raw_body, signature):
+                logger.warning("Wise webhook signature invalid; rejecting")
+                self._json_response(401, {"error": "invalid signature"})
+                return
+
+            try:
+                payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+            except json.JSONDecodeError:
+                self._json_response(400, {"error": "invalid json"})
+                return
+
+            # Ack within Wise's retry window; do work in background.
+            threading.Thread(
+                target=_wise_automation.handle, args=(payload,), daemon=True
+            ).start()
+            self._json_response(200, {"status": "queued"})
+        except Exception as e:
+            logger.exception("Wise webhook error: %s", e)
+            self._json_response(500, {"error": str(e)})
+
+    def _handle_telegram_webhook(self):
+        """Process Telegram inline-keyboard callbacks."""
+        if not _wise_automation:
+            self._json_response(503, {"error": "wise automation not enabled"})
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_length)) if content_length else {}
+            from telegram.inbox import process_update
+            threading.Thread(
+                target=process_update,
+                args=(body, _wise_automation, _telegram_notifier),
+                daemon=True,
+            ).start()
+            self._json_response(200, {"status": "ok"})
+        except Exception as e:
+            logger.exception("Telegram webhook error: %s", e)
+            self._json_response(500, {"error": str(e)})
+
     def _json_response(self, status: int, data: dict):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -143,12 +218,10 @@ def _process_recent_emails():
 
 def cmd_server():
     """Start the server: health endpoint + scheduler + Gmail automation."""
-    global _invoice_service, _gmail_automation
+    global _gmail_automation, _wise_automation
+    global _wise_signature_verifier, _telegram_notifier
 
     from config.settings import Settings
-    from auth.zoho_auth import ZohoAuth
-    from zoho.client import ZohoClient
-    from zoho.invoices import InvoiceService
     from scheduler.jobs import JobScheduler
 
     port = int(os.environ.get("PORT", 10000))
@@ -160,25 +233,46 @@ def cmd_server():
 
     try:
         settings = Settings()
-        settings.validate()
+        # Note: settings.validate() not called — legacy singleton vars are no
+        # longer required. Validation is per-entity inside the factory.
 
-        auth = ZohoAuth(
-            client_id=settings.zoho_auth.client_id,
-            client_secret=settings.zoho_auth.client_secret,
-            refresh_token=settings.zoho_auth.refresh_token,
-            accounts_url=settings.zoho_auth.accounts_url,
-        )
-        client = ZohoClient(
-            auth, settings.zoho_auth.api_base_url, settings.zoho_auth.organization_id
-        )
-        _invoice_service = InvoiceService(client)
+        from goldman.zoho import invoice_service_for, contact_service_for
+        from goldman_db.connection import app_conn
+        from goldman_db.entities import EntityRepository
 
-        # Initialize Gmail automation if enabled
+        with app_conn() as conn:
+            repo = EntityRepository(conn)
+            entities = repo.list_all()
+            for entity in entities:
+                if not entity.zoho_credential_key or not entity.zoho_organization_id:
+                    logger.warning(
+                        "Entity %s missing Zoho creds — skipping in services map",
+                        entity.slug,
+                    )
+                    continue
+                try:
+                    _invoice_services[entity.slug] = invoice_service_for(
+                        entity.slug, entity_repo=repo
+                    )
+                    logger.info("Wired Zoho services for entity %s", entity.slug)
+                except Exception as svc_err:
+                    logger.warning(
+                        "Could not wire entity %s: %s", entity.slug, svc_err
+                    )
+
+        # Telegram (shared by Gmail + Wise flows)
+        if settings.telegram.enabled:
+            from telegram.notifier import TelegramNotifier
+            _telegram_notifier = TelegramNotifier(
+                bot_token=settings.telegram.bot_token,
+                chat_id=settings.telegram.chat_id,
+            )
+
+        # Initialize Gmail automation if enabled (targets amzg for v1)
         if settings.gmail.enabled:
             from gmail.auth import GmailAuth
             from gmail.watcher import GmailWatcher
             from gmail.automation import InvoiceAutomation
-            from telegram.notifier import TelegramNotifier
 
             gmail_auth = GmailAuth(
                 credentials_b64=settings.gmail.credentials_b64,
@@ -187,22 +281,41 @@ def cmd_server():
             watcher = GmailWatcher(gmail_auth, settings.gmail.label_name)
             watcher.initialize()
 
-            # Set up Telegram if enabled
-            telegram = None
-            if settings.telegram.enabled:
-                telegram = TelegramNotifier(
-                    bot_token=settings.telegram.bot_token,
-                    chat_id=settings.telegram.chat_id,
-                )
+            _gmail_automation = InvoiceAutomation(
+                watcher, _invoice_services.get("amzg"), _telegram_notifier
+            )
+            logger.info("Gmail automation enabled for label: %s (entity=amzg)", settings.gmail.label_name)
 
-            _gmail_automation = InvoiceAutomation(watcher, _invoice_service, telegram)
-            logger.info("Gmail automation enabled for label: %s", settings.gmail.label_name)
+        # Initialize Wise automation if enabled (targets amzg for v1)
+        if settings.wise.enabled:
+            from wise.auth import WiseAuth
+            from wise.client import WiseClient
+            from wise.signature import SignatureVerifier
+            from wise.handler import WiseAutomation
+
+            wise_auth = WiseAuth.from_env_b64(
+                settings.wise.api_token, settings.wise.private_key_b64
+            )
+            wise_client = WiseClient(wise_auth)
+            _wise_signature_verifier = SignatureVerifier()
+            with app_conn() as conn:
+                repo = EntityRepository(conn)
+                contact_service = contact_service_for("amzg", entity_repo=repo)
+            _wise_automation = WiseAutomation(
+                wise_client=wise_client,
+                invoice_service=_invoice_services.get("amzg"),
+                contact_service=contact_service,
+                telegram=_telegram_notifier,
+            )
+            logger.info("Wise automation enabled (entity=amzg)")
 
         if settings.scheduler.enabled:
-            scheduler = JobScheduler(_invoice_service, settings, _gmail_automation)
+            scheduler = JobScheduler(
+                _invoice_services.get("amzg"), settings, _gmail_automation
+            )
             scheduler.start()
 
-        logger.info("Zoho Invoice Agent running. Waiting for requests...")
+        logger.info("Goldman running. Waiting for requests...")
         threading.Event().wait()  # block forever
 
     except Exception as e:
