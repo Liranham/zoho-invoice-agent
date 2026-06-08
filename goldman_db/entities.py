@@ -61,7 +61,8 @@ class EntityRepository:
     def list_all(self) -> list[Entity]:
         with self.conn.cursor() as cur:
             cur.execute(
-                f"SELECT {_SELECT_COLS} FROM goldman.entities ORDER BY created_at"
+                f"SELECT {_SELECT_COLS} FROM goldman.entities "
+                f"ORDER BY parent_entity_id NULLS FIRST, created_at"
             )
             return [_row_to_entity(row) for row in cur.fetchall()]
 
