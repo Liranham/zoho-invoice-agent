@@ -312,7 +312,7 @@ Year and month derive from the **invoice date**, not the email-received date. Fo
 
 ## 9. Onboarding flow — brain dump first, gap fill second
 
-Phase 1 facts that only Liran knows (registrations, ownership %, bank accounts, vendor categorisations, prior decisions) get into Goldman via a **two-step conversational onboarding**:
+Phase 1 facts that only Liran knows (registrations, ownership %, bank accounts, vendor categorisations, prior decisions) get into Goldman via a **conversational onboarding in four steps**:
 
 ### Step 1 — brain dump
 
