@@ -540,6 +540,311 @@ def sync_zoho_contacts_cmd(entity):
                f"{summary['clients']} clients, {summary['vendors']} vendors.")
 
 
+# -----------------------------------------------------------------------------
+# Bills (Phase 3 vendor intake)
+# -----------------------------------------------------------------------------
+
+@cli.group()
+def bill():
+    """Goldman vendor-bill intake pipeline."""
+
+
+@bill.command("parse")
+@click.argument("file", type=click.Path(exists=True))
+def bill_parse(file):
+    """Parse a single bill file via Claude vision. Read-only — no DB writes."""
+    from pathlib import Path
+    from goldman.bills.parser import parse_bill_file
+    from goldman.llm import GoldmanLLM
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+
+    llm = GoldmanLLM()
+    with app_conn() as conn:
+        entities = EntityRepository(conn).list_all()
+    known = [e.legal_name for e in entities]
+
+    result = parse_bill_file(Path(file), llm=llm, known_entities=known)
+
+    click.echo(f"  vendor:           {result.vendor}")
+    click.echo(f"  invoice_number:   {result.invoice_number or '-'}")
+    click.echo(f"  amount:           {result.amount} {result.currency}")
+    click.echo(f"  invoice_date:     {result.invoice_date}")
+    click.echo(f"  billing_entity:   {result.billing_entity or '-'}")
+    click.echo(f"  parse_confidence: {result.parse_confidence}")
+
+
+@bill.command("file")
+@click.option("--entity", default=None,
+              help="Force entity slug (overrides parser's billing_entity).")
+@click.argument("file", type=click.Path(exists=True))
+def bill_file(entity, file):
+    """End-to-end: parse + trust gate + three-write pipeline."""
+    import mimetypes
+    from datetime import date
+    from pathlib import Path
+
+    from goldman.bills.idempotency import bill_hash, normalise_vendor
+    from goldman.bills.parser import parse_bill_file
+    from goldman.bills.pipeline import run_three_write_pipeline
+    from goldman.bills.trust_gate import decide_gate
+    from goldman.drive.client import GoogleDriveClient
+    from goldman.drive.folders import ensure_path
+    from goldman.llm import GoldmanLLM
+    from goldman.storage import SupabaseStorage
+    from goldman.zoho import for_entity
+    from goldman_db.bills import BillRepository, DuplicateBillError
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from goldman_db.pending_confirmations import PendingConfirmationRepository
+    from goldman_db.vendors import VendorRepository
+    from zoho.expenses import ExpenseService
+
+    p = Path(file)
+    mime, _ = mimetypes.guess_type(p.name)
+    mime = mime or "application/octet-stream"
+
+    llm = GoldmanLLM()
+
+    # 1. Parse (need entity list for the prompt context)
+    with app_conn() as conn:
+        entities = EntityRepository(conn).list_all()
+    known = [e.legal_name for e in entities]
+    parse = parse_bill_file(p, llm=llm, known_entities=known)
+
+    # 2. Resolve entity (CLI override > parser's billing_entity match)
+    entity_slug = entity.lower() if entity else None
+    if not entity_slug and parse.billing_entity:
+        for e in entities:
+            if e.legal_name.strip().lower() == parse.billing_entity.strip().lower():
+                entity_slug = e.slug
+                break
+
+    if not entity_slug:
+        raise click.ClickException(
+            "Cannot resolve billing entity from parse. Pass --entity SLUG."
+        )
+
+    # 3-6. Pre-pipeline DB ops in one connection
+    with app_conn() as conn:
+        ent = EntityRepository(conn).get_by_slug(entity_slug)
+        vendors_repo = VendorRepository(conn)
+        bills_repo = BillRepository(conn)
+        pending_repo = PendingConfirmationRepository(conn)
+
+        # Vendor resolve (normalised fuzzy match)
+        all_vendors = vendors_repo.list_by_entity(ent.id)
+        norm = normalise_vendor(parse.vendor)
+        vendor = next(
+            (v for v in all_vendors if normalise_vendor(v.vendor_name) == norm),
+            None,
+        )
+
+        # Idempotency
+        h = bill_hash(
+            vendor=parse.vendor,
+            invoice_number=parse.invoice_number,
+            amount=parse.amount,
+            invoice_date=parse.invoice_date,
+        )
+        existing = bills_repo.get_by_idempotency_hash(h)
+        if existing is not None:
+            click.echo(
+                f"  -> already filed (bill {existing.id}, "
+                f"status={existing.status})"
+            )
+            return
+
+        # Insert bill row
+        try:
+            bill_id = bills_repo.insert(
+                entity_id=ent.id,
+                vendor_id=vendor.id if vendor else None,
+                vendor_name_at_intake=parse.vendor,
+                invoice_number=parse.invoice_number,
+                invoice_date=parse.invoice_date,
+                amount=parse.amount,
+                currency=parse.currency,
+                idempotency_hash=h,
+                due_date=parse.due_date,
+                line_items=parse.line_items,
+                tax_amount=parse.tax_amount,
+                original_filename=p.name,
+            )
+        except DuplicateBillError:
+            click.echo("  -> race: duplicate found on insert; skipping.")
+            return
+
+        # Trust gate
+        decision = decide_gate(
+            parse=parse, vendor=vendor,
+            known_entity_slug=entity_slug,
+            bill_already_filed=False,
+        )
+
+        if not decision.auto_file:
+            bills_repo.mark_confirmation_required(bill_id, reason=decision.reason)
+            pending_id = pending_repo.insert(
+                bill_id=bill_id, entity_id=ent.id,
+                prompt=(
+                    f"{parse.vendor} {parse.amount} {parse.currency} — "
+                    f"file to {ent.legal_name}? Reason: {decision.reason}"
+                ),
+                options=[
+                    {"label": "Yes, file", "value": f"file:{entity_slug}"},
+                    {"label": "Hold", "value": "hold"},
+                    {"label": "Discard", "value": "discard"},
+                ],
+            )
+            click.echo(
+                f"  -> confirmation required: {decision.reason}\n"
+                f"     pending_id={pending_id}; waiting for Telegram (Phase 4)."
+            )
+            return
+
+    # 7. Auto-file path
+    storage = SupabaseStorage()
+    drive_client = GoogleDriveClient()
+    with app_conn() as conn:
+        zoho_client = for_entity(
+            entity_slug, entity_repo=EntityRepository(conn),
+        )
+    zoho_expenses = ExpenseService(zoho_client)
+
+    d = parse.invoice_date or date.today()
+    month_name = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November",
+                  "December"][d.month - 1]
+    folder_id = ensure_path(drive_client, [
+        "Goldman Bills", ent.legal_name, str(d.year), month_name,
+    ])
+
+    with app_conn() as conn:
+        bills_repo = BillRepository(conn)
+        bills_repo.mark_auto_filed(bill_id)
+        result = run_three_write_pipeline(
+            bill_id=bill_id,
+            file_path=p,
+            mime_type=mime,
+            parse=parse,
+            entity_slug=ent.slug,
+            entity_legal_name=ent.legal_name,
+            storage=storage,
+            storage_bucket="goldman-bills",
+            drive_client=drive_client,
+            drive_folder_id=folder_id,
+            zoho_expenses=zoho_expenses,
+            bills_repo=bills_repo,
+        )
+
+    if result.all_succeeded():
+        click.echo(
+            f"  ok filed {parse.vendor} {parse.amount} {parse.currency} -> "
+            f"{ent.legal_name}; Zoho expense {result.zoho_expense_id}"
+        )
+    else:
+        click.echo(
+            f"  partial: storage={result.in_storage} drive={result.in_drive} "
+            f"zoho={result.in_zoho}; error={result.error}"
+        )
+
+
+@bill.command("list-pending")
+def bill_list_pending():
+    """List bills with status partial/pending (failure tray)."""
+    from goldman_db.bills import BillRepository
+    from goldman_db.connection import app_conn
+
+    with app_conn() as conn:
+        bills = BillRepository(conn).list_pending_partial_writes(limit=50)
+
+    if not bills:
+        click.echo("(no pending bills)")
+        return
+    for b in bills:
+        click.echo(
+            f"  {b.vendor_name_at_intake} {b.amount} {b.currency} | "
+            f"storage={b.in_storage} drive={b.in_drive} zoho={b.in_zoho} | "
+            f"id={b.id} | {b.last_error or ''}"
+        )
+
+
+@bill.command("retry")
+@click.argument("bill_id")
+def bill_retry(bill_id):
+    """Retry the failed legs for a partial bill.
+
+    Expects GOLDMAN_BILL_RETRY_PATH env var pointing at the original file
+    on disk. Production retry will fetch from Storage; v1 keeps it simple.
+    """
+    import os
+    from datetime import date
+    from pathlib import Path
+    from uuid import UUID
+
+    from goldman.bills.parser import BillParseResult
+    from goldman.bills.pipeline import run_three_write_pipeline
+    from goldman.drive.client import GoogleDriveClient
+    from goldman.drive.folders import ensure_path
+    from goldman.storage import SupabaseStorage
+    from goldman.zoho import for_entity
+    from goldman_db.bills import BillRepository
+    from goldman_db.connection import app_conn
+    from goldman_db.entities import EntityRepository
+    from zoho.expenses import ExpenseService
+
+    src = os.environ.get("GOLDMAN_BILL_RETRY_PATH", "")
+    if not src or not Path(src).exists():
+        raise click.ClickException(
+            "Set GOLDMAN_BILL_RETRY_PATH to the original file path to retry."
+        )
+
+    with app_conn() as conn:
+        b = BillRepository(conn).get(UUID(bill_id))
+        if not b:
+            raise click.ClickException(f"No bill {bill_id}")
+        ent = EntityRepository(conn).get_by_id(b.entity_id)
+
+    parse = BillParseResult(
+        vendor=b.vendor_name_at_intake, invoice_number=b.invoice_number,
+        amount=float(b.amount), currency=b.currency,
+        invoice_date=b.invoice_date, due_date=b.due_date,
+        billing_entity=ent.legal_name,
+        line_items=b.line_items, tax_amount=float(b.tax_amount or 0) or None,
+        parse_confidence=1.0,
+    )
+
+    storage = SupabaseStorage()
+    drive_client = GoogleDriveClient()
+    with app_conn() as conn:
+        zoho_client = for_entity(ent.slug, entity_repo=EntityRepository(conn))
+    zoho_expenses = ExpenseService(zoho_client)
+
+    d = b.invoice_date or date.today()
+    month_name = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November",
+                  "December"][d.month - 1]
+    folder_id = ensure_path(drive_client, [
+        "Goldman Bills", ent.legal_name, str(d.year), month_name,
+    ])
+
+    with app_conn() as conn:
+        bills_repo = BillRepository(conn)
+        result = run_three_write_pipeline(
+            bill_id=b.id, file_path=Path(src),
+            mime_type="application/pdf", parse=parse,
+            entity_slug=ent.slug, entity_legal_name=ent.legal_name,
+            storage=storage, storage_bucket="goldman-bills",
+            drive_client=drive_client, drive_folder_id=folder_id,
+            zoho_expenses=zoho_expenses, bills_repo=bills_repo,
+        )
+
+    click.echo(
+        f"  retry: storage={result.in_storage} drive={result.in_drive} "
+        f"zoho={result.in_zoho}"
+    )
+
+
 @cli.command("who")
 def who_cmd():
     """Print Goldman's company brain: every entity + its registrations,
