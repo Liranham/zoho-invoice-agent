@@ -16,3 +16,10 @@ def test_is_allowed_chat_matches_whitelist(monkeypatch):
 def test_is_allowed_chat_denies_when_empty_allowlist(monkeypatch):
     monkeypatch.delenv("GOLDMAN_BOT_ALLOWLIST_CHAT_IDS", raising=False)
     assert is_allowed_chat(7884172049) is False
+
+
+def test_goldman_persona_explains_pack_citation():
+    from goldman.bot.handlers import GOLDMAN_PERSONA
+    assert "knowledge_pack" in GOLDMAN_PERSONA or "knowledge pack" in GOLDMAN_PERSONA.lower()
+    assert "pack_topic" in GOLDMAN_PERSONA or "topic" in GOLDMAN_PERSONA.lower()
+    assert "uploaded" in GOLDMAN_PERSONA.lower() or "letter" in GOLDMAN_PERSONA.lower()
