@@ -170,11 +170,13 @@ def render_who(summaries) -> str:
         tp = s.last_tp_doc
         lines.append("   TP documentation:")
         if tp:
-            label = (
-                f"{tp['source']}: {tp.get('pack_version') or tp['filename']}"
-                if tp["source"] == "knowledge_pack"
-                else tp["filename"]
-            )
+            if tp["source"] == "knowledge_pack":
+                version_suffix = (
+                    f" {tp['pack_version']}" if tp.get("pack_version") else ""
+                )
+                label = f"knowledge_pack: {tp['filename']}{version_suffix}"
+            else:
+                label = tp["filename"]
             uploaded = tp.get("uploaded_at") or ""
             short_date = uploaded[:10] if uploaded else "(unknown date)"
             lines.append(f"     {label} (uploaded {short_date})")
