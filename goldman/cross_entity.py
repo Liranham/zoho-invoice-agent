@@ -52,5 +52,51 @@ def last_tp_doc(
     entity_a_legal_name: str,
     entity_b_legal_name: str,
 ) -> Optional[dict]:
-    """Stub — Task 2 implements."""
-    raise NotImplementedError("last_tp_doc — implemented in Task 2")
+    """Return the most recent goldman.documents row that is either:
+      (a) source='knowledge_pack' AND pack_topic='transfer_pricing_hk_us', OR
+      (b) source != 'knowledge_pack' AND (summary OR filename) mentions both
+          entity legal names (case-insensitive).
+    Picks most recent by uploaded_at DESC. Returns None if neither pass finds a row.
+    """
+    with conn.cursor() as cur:
+        # Preferred: explicit transfer-pricing knowledge_pack
+        cur.execute(
+            """
+            SELECT filename, source, pack_version, uploaded_at
+            FROM goldman.documents
+            WHERE source = 'knowledge_pack'
+              AND pack_topic = 'transfer_pricing_hk_us'
+            ORDER BY uploaded_at DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if row is None:
+            # Fallback: any document mentioning both entity legal names
+            cur.execute(
+                """
+                SELECT filename, source, pack_version, uploaded_at
+                FROM goldman.documents
+                WHERE source != 'knowledge_pack'
+                  AND (
+                       (summary ILIKE '%%' || %s || '%%' AND summary ILIKE '%%' || %s || '%%')
+                       OR
+                       (filename ILIKE '%%' || %s || '%%' AND filename ILIKE '%%' || %s || '%%')
+                  )
+                ORDER BY uploaded_at DESC
+                LIMIT 1
+                """,
+                (entity_a_legal_name, entity_b_legal_name,
+                 entity_a_legal_name, entity_b_legal_name),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        return None
+    filename, source, pack_version, uploaded_at = row
+    return {
+        "filename": filename,
+        "source": source,
+        "pack_version": pack_version,
+        "uploaded_at": uploaded_at.isoformat() if uploaded_at else None,
+    }

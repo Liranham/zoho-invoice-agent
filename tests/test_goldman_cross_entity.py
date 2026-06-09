@@ -72,3 +72,70 @@ def test_intercompany_flow_no_rows_returns_zero_result():
     )
 
     assert result == {"count": 0, "total": 0.0, "currency": None}
+
+
+def test_last_tp_doc_prefers_knowledge_pack():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = (
+        "transfer_pricing_hk_us_v1.md",
+        "knowledge_pack",
+        "v1-2026-06",
+        datetime(2026, 6, 9, tzinfo=timezone.utc),
+    )
+
+    result = last_tp_doc(
+        conn=conn,
+        entity_a_legal_name="AMZ Expert Global Limited",
+        entity_b_legal_name="Specific Edge Outsourcing LLC",
+    )
+
+    assert result is not None
+    assert result["filename"] == "transfer_pricing_hk_us_v1.md"
+    assert result["source"] == "knowledge_pack"
+    assert result["pack_version"] == "v1-2026-06"
+    assert result["uploaded_at"] == "2026-06-09T00:00:00+00:00"
+
+    sql_first = str(cur.execute.call_args_list[0])
+    assert "knowledge_pack" in sql_first
+    assert "transfer_pricing_hk_us" in sql_first
+
+
+def test_last_tp_doc_falls_back_when_no_pack():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.side_effect = [
+        None,
+        (
+            "2025-cpa-letter.pdf",
+            "uploaded",
+            None,
+            datetime(2025, 11, 15, tzinfo=timezone.utc),
+        ),
+    ]
+
+    result = last_tp_doc(
+        conn=conn,
+        entity_a_legal_name="AMZ Expert Global Limited",
+        entity_b_legal_name="Specific Edge Outsourcing LLC",
+    )
+
+    assert result is not None
+    assert result["filename"] == "2025-cpa-letter.pdf"
+    assert result["source"] == "uploaded"
+    assert result["pack_version"] is None
+
+    assert cur.execute.call_count == 2
+
+
+def test_last_tp_doc_returns_none_when_nothing_found():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.side_effect = [None, None]
+
+    result = last_tp_doc(
+        conn=conn,
+        entity_a_legal_name="X", entity_b_legal_name="Y",
+    )
+
+    assert result is None
