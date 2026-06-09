@@ -23,3 +23,9 @@ def test_goldman_persona_explains_pack_citation():
     assert "knowledge_pack" in GOLDMAN_PERSONA or "knowledge pack" in GOLDMAN_PERSONA.lower()
     assert "pack_topic" in GOLDMAN_PERSONA or "topic" in GOLDMAN_PERSONA.lower()
     assert "uploaded" in GOLDMAN_PERSONA.lower() or "letter" in GOLDMAN_PERSONA.lower()
+
+
+def test_goldman_persona_mentions_recall_decisions_tool():
+    from goldman.bot.handlers import GOLDMAN_PERSONA
+    assert "recall_decisions" in GOLDMAN_PERSONA
+    assert "decide" in GOLDMAN_PERSONA.lower()
