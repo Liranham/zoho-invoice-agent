@@ -21,6 +21,10 @@ import click
 
 from config.settings import Settings
 from batch.processor import BatchProcessor
+from goldman.documents import upload_document
+from goldman.llm import DocumentSummariser
+from goldman.storage import SupabaseStorage
+from goldman_db.connection import app_conn
 
 
 def _build_services(entity_slug: str):
@@ -385,6 +389,63 @@ def document_list(entity):
         click.echo(f"    path: {d.original_storage_path}")
         if d.summary:
             click.echo(f"    summary: {d.summary[:150]}")
+
+
+# -----------------------------------------------------------------------------
+# Knowledge packs (Phase 6.1)
+# -----------------------------------------------------------------------------
+
+@cli.group("pack")
+def pack_group():
+    """Goldman knowledge-pack management."""
+
+
+@pack_group.command("add")
+@click.argument("file", type=click.Path(exists=True))
+@click.option("--topic", required=True,
+              help="Pack topic (e.g. us_llc_tax, hk_profits_tax)")
+@click.option("--version", required=True,
+              help="Pack version (e.g. v1-2026-06)")
+def pack_add(file, topic, version):
+    """Add a knowledge pack to Goldman's memory.
+
+    Uploads the file to Supabase Storage at packs/{topic}/{version}/{filename},
+    inserts a goldman.documents row with source='knowledge_pack', chunks it,
+    and queues for embedding. Run 'db embed-pending' next to embed.
+    """
+    from pathlib import Path
+    from goldman_db.documents import DocumentChunkRepository, DocumentRepository
+
+    p = Path(file)
+    storage_path = f"packs/{topic}/{version}/{p.name}"
+
+    storage = SupabaseStorage()
+    summariser = DocumentSummariser()
+
+    with app_conn() as conn:
+        doc_repo = DocumentRepository(conn)
+        chunk_repo = DocumentChunkRepository(conn)
+
+        result = upload_document(
+            file_path=p,
+            entity_id=None,
+            entity_slug=None,
+            storage=storage,
+            doc_repo=doc_repo,
+            chunk_repo=chunk_repo,
+            summariser=summariser,
+            bucket="goldman-documents",
+            source="knowledge_pack",
+            pack_topic=topic,
+            pack_version=version,
+            storage_path_override=storage_path,
+        )
+
+    click.echo(
+        f"  ok added pack {topic} v{version}: "
+        f"doc_id={result.document_id}, chunks={result.chunk_count}"
+    )
+    click.echo("  -> run 'db embed-pending' to embed the chunks.")
 
 
 # -----------------------------------------------------------------------------
