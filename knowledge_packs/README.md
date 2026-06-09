@@ -31,3 +31,13 @@ are the specifics for your company.
   single-member LLCs. Covers Form 5472, ECI, state considerations,
   filing calendar, EIN/ITIN/SSN, withholding, contractor vs employee,
   penalty triggers.
+- `hk_profits_tax_v1.md` — Hong Kong profits tax for HK-incorporated
+  companies. Covers the territorial source principle, two-tier rate,
+  offshore profits claim, filing calendar, documentation requirements,
+  common foot-guns, audit patterns, tax incentives, cross-border
+  considerations.
+- `transfer_pricing_hk_us_v1.md` — Transfer pricing for HK-US
+  intercompany transactions between AMZ Expert Global Limited and
+  Specific Edge Outsourcing LLC. Covers arm's-length principle, OECD
+  methods, documentation requirements both sides, common intercompany
+  structures, audit risks.
