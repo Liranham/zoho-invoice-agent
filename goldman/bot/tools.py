@@ -139,6 +139,7 @@ def _who(ctx) -> str:
         bank_repo=BankAccountRepository(ctx.conn),
         clients_repo=ClientRepository(ctx.conn),
         vendors_repo=VendorRepository(ctx.conn),
+        conn=ctx.conn,
     )
     return render_who(summaries)
 

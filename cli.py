@@ -962,6 +962,7 @@ def who_cmd():
             bank_repo=BankAccountRepository(conn),
             clients_repo=ClientRepository(conn),
             vendors_repo=VendorRepository(conn),
+            conn=conn,
         )
 
     click.echo(render_who(summaries))

@@ -56,6 +56,7 @@ def handle_who(*, query: dict, body: dict) -> tuple:
             bank_repo=BankAccountRepository(conn),
             clients_repo=ClientRepository(conn),
             vendors_repo=VendorRepository(conn),
+            conn=conn,
         )
     return 200, {"entities": [_serialise_summary(s) for s in summaries]}
 
