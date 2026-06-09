@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from goldman.decisions import decision_timeline
 from goldman_db.entities import EntityRepository
 from goldman_db.hybrid_search import hybrid_search
 
@@ -73,6 +74,18 @@ TOOL_SCHEMAS = [
             "required": ["slug"],
         },
     },
+    {
+        "name": "recall_decisions",
+        "description": "Return a chronological timeline of decision-kind facts whose text mentions the given topic. Use this when the user asks 'what did we decide about X' or anything implying a structured decision history. Returns most recent first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Topic substring; case-insensitive match against the fact text."},
+                "entity": {"type": "string", "description": "Optional entity slug (amzg/seo) to restrict the search. Omit for cross-entity."},
+            },
+            "required": ["topic"],
+        },
+    },
 ]
 
 
@@ -100,6 +113,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _list_pending(ctx)
     if name == "switch_entity":
         return _switch_entity(ctx, arguments)
+    if name == "recall_decisions":
+        return _recall_decisions(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -200,3 +215,26 @@ def _switch_entity(ctx, args) -> str:
     )
     ctx.entity_slug = slug
     return f"Switched to {ent.legal_name} ({slug})."
+
+
+def _recall_decisions(ctx, args) -> str:
+    topic = args["topic"].strip()
+    entity_slug = args.get("entity") or ctx.entity_slug
+    try:
+        results = decision_timeline(
+            conn=ctx.conn, topic=topic, entity_slug=entity_slug,
+        )
+    except ValueError as e:
+        return f"Cannot run recall_decisions: {e}"
+
+    if not results:
+        scope = f" for {entity_slug}" if entity_slug else ""
+        return f"No prior decisions{scope} matching {topic!r}."
+
+    header = f"Decision timeline for {topic!r}:"
+    lines = [header]
+    for r in results:
+        date_part = (r["created_at"] or "")[:10] or "(unknown date)"
+        ent_part = f" ({r['entity_slug']})" if r["entity_slug"] else ""
+        lines.append(f"  {date_part}: {r['fact']}{ent_part}")
+    return "\n".join(lines)
