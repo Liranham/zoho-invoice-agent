@@ -322,9 +322,11 @@ def document():
 
 @document.command("upload")
 @click.option("--entity", required=True, help="Entity slug")
+@click.option("--category", default="Documents",
+              help="Drive folder category (Documents, Invoices, Tax, etc.)")
 @click.argument("file", type=click.Path(exists=True))
-def document_upload(entity, file):
-    """Upload a document (txt/md/pdf), summarise via Claude, chunk + insert."""
+def document_upload(entity, category, file):
+    """Upload a document (txt/md/pdf/docx/xlsx). Mirrors to Drive."""
     from pathlib import Path
     from goldman.documents import upload_document
     from goldman.llm import DocumentSummariser
@@ -335,6 +337,13 @@ def document_upload(entity, file):
 
     storage = SupabaseStorage()
     summariser = DocumentSummariser()
+
+    drive_client = None
+    try:
+        from goldman.drive.client import GoogleDriveClient
+        drive_client = GoogleDriveClient()
+    except Exception:
+        drive_client = None
 
     with app_conn() as conn:
         ent = EntityRepository(conn).get_by_slug(entity.lower())
@@ -352,6 +361,10 @@ def document_upload(entity, file):
             chunk_repo=chunk_repo,
             summariser=summariser,
             bucket="goldman-documents",
+            drive_client=drive_client,
+            drive_root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
+            entity_legal_name=ent.legal_name,
+            drive_category=category,
         )
 
     click.echo(
@@ -779,7 +792,7 @@ def bill_file(entity, file):
                   "December"][d.month - 1]
     folder_id = ensure_path(
         drive_client,
-        [ent.legal_name, str(d.year), month_name],
+        [ent.legal_name, str(d.year), "Invoices", month_name],
         root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
     )
 
@@ -890,7 +903,7 @@ def bill_retry(bill_id):
                   "December"][d.month - 1]
     folder_id = ensure_path(
         drive_client,
-        [ent.legal_name, str(d.year), month_name],
+        [ent.legal_name, str(d.year), "Invoices", month_name],
         root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
     )
 

@@ -107,6 +107,10 @@ def upload_document(
     pack_topic: Optional[str] = None,
     pack_version: Optional[str] = None,
     storage_path_override: Optional[str] = None,
+    drive_client=None,
+    drive_root_id: Optional[str] = None,
+    entity_legal_name: Optional[str] = None,
+    drive_category: str = "Documents",
 ) -> UploadResult:
     """Upload one document end-to-end.
 
@@ -170,6 +174,27 @@ def upload_document(
             doc_repo.set_summary(doc_id, summary)
         except Exception:
             # Non-fatal: chunks are searchable even without a summary.
+            pass
+
+    # 6. Mirror to Google Drive (best effort; failure here is non-fatal).
+    if drive_client is not None and entity_legal_name:
+        try:
+            from goldman.drive.folders import ensure_path
+            year = str(datetime.utcnow().year)
+            folder_id = ensure_path(
+                drive_client,
+                [entity_legal_name, year, drive_category],
+                root_id=drive_root_id,
+            )
+            drive_client.upload_file(
+                name=file_path.name,
+                parent_id=folder_id,
+                content=body,
+                mime_type=mime_type,
+            )
+        except Exception:
+            # Drive failure shouldn't block memory ingestion. We can sweep
+            # missing-Drive docs later via a backfill if needed.
             pass
 
     return UploadResult(

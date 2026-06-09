@@ -20,6 +20,121 @@ from goldman_db.pending_confirmations import PendingConfirmationRepository
 logger = logging.getLogger(__name__)
 
 
+def _classify_entity(*, tmp_path: str, entities: list, llm) -> tuple:
+    """Ask Claude to pick which entity a non-bill document belongs to.
+
+    Returns (entity_slug, category, confidence). entity_slug may be None
+    if Claude can't tell, in which case Telegram asks the user.
+    Category is one of: 'Documents', 'Tax', 'Statements', 'Contracts'.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "entity_slug": {
+                "type": "string",
+                "enum": [e.slug for e in entities] + ["unknown"],
+                "description": "Which company this document belongs to.",
+            },
+            "category": {
+                "type": "string",
+                "enum": ["Documents", "Tax", "Statements", "Contracts"],
+                "description": "Best-fit folder category.",
+            },
+            "reason": {"type": "string"},
+        },
+        "required": ["entity_slug", "category"],
+    }
+    legal_names = "; ".join(f"{e.slug}={e.legal_name}" for e in entities)
+    system = (
+        f"You read a document and decide which company it belongs to. "
+        f"Companies: {legal_names}. If you cannot tell with high confidence, "
+        f"return 'unknown'. Pick a sensible category: Tax for filings/IRS/"
+        f"HKIRD letters, Statements for bank/Stripe/Wise statements, "
+        f"Contracts for signed agreements, Documents for everything else."
+    )
+    try:
+        result = llm.extract_from_document(
+            document_path=tmp_path, system=system,
+            tool_name="classify_document", tool_schema=schema,
+        )
+    except Exception as e:
+        logger.exception("Classification failed: %s", e)
+        return None, "Documents", 0.0
+
+    slug = result.get("entity_slug")
+    if slug == "unknown":
+        slug = None
+    return slug, result.get("category", "Documents"), 1.0
+
+
+async def _intake_general_document(*, update, tmp_path, original_filename,
+                                    entities, llm) -> None:
+    """Ingest a non-bill document: classify entity, upload to memory + Drive."""
+    msg = update.message
+    entity_slug, category, _ = _classify_entity(
+        tmp_path=tmp_path, entities=entities, llm=llm,
+    )
+
+    if entity_slug is None:
+        await msg.reply_text(
+            f"Got *{original_filename}* — couldn't tell which company "
+            f"it's for. Reply with the company name and I'll file it.",
+            parse_mode="Markdown",
+        )
+        return
+
+    ent = next(e for e in entities if e.slug == entity_slug)
+
+    from pathlib import Path
+    from goldman.documents import upload_document
+    from goldman.llm import DocumentSummariser
+    from goldman.storage import SupabaseStorage
+    from goldman_db.documents import DocumentChunkRepository, DocumentRepository
+
+    storage = SupabaseStorage()
+    summariser = DocumentSummariser()
+    drive_client = None
+    try:
+        from goldman.drive.client import GoogleDriveClient
+        drive_client = GoogleDriveClient()
+    except Exception:
+        pass
+
+    target = Path(tmp_path)
+    if original_filename and target.name != original_filename:
+        renamed = target.parent / original_filename
+        try:
+            target.rename(renamed)
+            target = renamed
+        except Exception:
+            pass
+
+    with app_conn() as conn:
+        doc_repo = DocumentRepository(conn)
+        chunk_repo = DocumentChunkRepository(conn)
+        result = upload_document(
+            file_path=target,
+            entity_id=ent.id,
+            entity_slug=ent.slug,
+            storage=storage,
+            doc_repo=doc_repo,
+            chunk_repo=chunk_repo,
+            summariser=summariser,
+            bucket="goldman-documents",
+            drive_client=drive_client,
+            drive_root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
+            entity_legal_name=ent.legal_name,
+            drive_category=category,
+        )
+
+    await msg.reply_text(
+        f"Filed *{original_filename}* under "
+        f"*{ent.legal_name} / {category}*\n"
+        f"Indexed {result.chunk_count} chunk(s). Ask me anything about it.",
+        parse_mode="Markdown",
+    )
+
+
 GOLDMAN_PERSONA = """\
 You are Goldman, the CFO of AMZ Expert Global Limited (Hong Kong parent)
 and Specific Edge Outsourcing LLC (US subsidiary). You speak in clear
@@ -165,10 +280,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             break
 
     if not entity_slug:
-        await msg.reply_text(
-            f"I parsed: {parse.vendor} {parse.amount} {parse.currency}\n"
-            f"But I can't tell which company is being billed. "
-            f"Reply with 'amzg' or 'seo'."
+        # Not a recognisable bill — treat as a general document.
+        # Ask Claude to classify which entity it belongs to from the
+        # doc content, then ingest + mirror to Drive.
+        await _intake_general_document(
+            update=update, tmp_path=tmp.name,
+            original_filename=getattr(doc, "file_name", "document.pdf"),
+            entities=entities, llm=llm,
         )
         return
 
