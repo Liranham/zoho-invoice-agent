@@ -61,14 +61,26 @@ def extract_text_from_xlsx(file_path: Path) -> str:
     return "\n".join(parts).strip()
 
 
+VISION_OCR_MIN_CHARS = 50  # threshold below which we fall back to vision OCR
+
+
 def _read_text(file_path: Path, mime_type: str) -> str:
     if mime_type == "application/pdf":
-        return extract_text_from_pdf(file_path)
+        text = extract_text_from_pdf(file_path)
+        if len(text.strip()) < VISION_OCR_MIN_CHARS:
+            # Image-only / scanned PDF — fall back to Claude vision OCR.
+            from goldman.llm import vision_extract_text
+            text = vision_extract_text(file_path=file_path)
+        return text
     suffix = file_path.suffix.lower()
     if suffix == ".docx" or mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         return extract_text_from_docx(file_path)
     if suffix == ".xlsx" or mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
         return extract_text_from_xlsx(file_path)
+    # Image files fall straight through to vision OCR.
+    if mime_type.startswith("image/"):
+        from goldman.llm import vision_extract_text
+        return vision_extract_text(file_path=file_path)
     return file_path.read_text(errors="replace")
 
 

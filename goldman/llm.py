@@ -158,3 +158,57 @@ def _extract_from_document(self, *, document_path, system, tool_name, tool_schem
 
 
 GoldmanLLM.extract_from_document = _extract_from_document
+
+
+# OCR-via-vision fallback for image-only / scanned PDFs.
+# pypdf returns empty text on these; Claude vision reads the page images.
+def vision_extract_text(*, file_path, model: str = "claude-haiku-4-5-20251001",
+                        max_tokens: int = 4096) -> str:
+    """Send the file (PDF or image) to Claude vision and ask for verbatim text.
+
+    Used as fallback when pypdf returns ~0 characters (scanned / image-only).
+    Returns raw extracted text; empty string if nothing readable.
+    """
+    import base64
+    import mimetypes
+    from pathlib import Path
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise LLMConfigError("ANTHROPIC_API_KEY not set; vision OCR unavailable.")
+
+    path = Path(file_path)
+    mime, _ = mimetypes.guess_type(path.name)
+    mime = mime or "application/octet-stream"
+    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+
+    if mime == "application/pdf":
+        media_block = {"type": "document",
+                       "source": {"type": "base64",
+                                  "media_type": "application/pdf",
+                                  "data": b64}}
+    elif mime.startswith("image/"):
+        media_block = {"type": "image",
+                       "source": {"type": "base64",
+                                  "media_type": mime,
+                                  "data": b64}}
+    else:
+        return ""
+
+    client = anthropic.Anthropic(api_key=api_key)
+    prompt = (
+        "Extract every piece of legible text from this document, verbatim. "
+        "Preserve structure (line breaks, tables as pipe-separated rows, "
+        "field labels colon-separated). Do not paraphrase, summarise, or "
+        "add commentary — only the text that appears on the page. If a "
+        "field is illegible, write [illegible] in its place."
+    )
+    resp = client.messages.create(
+        model=model, max_tokens=max_tokens,
+        messages=[{"role": "user",
+                   "content": [media_block, {"type": "text", "text": prompt}]}],
+    )
+    for block in resp.content:
+        if getattr(block, "type", None) == "text":
+            return block.text.strip()
+    return ""

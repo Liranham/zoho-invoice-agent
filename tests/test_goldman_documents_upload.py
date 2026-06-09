@@ -59,7 +59,9 @@ def test_upload_extracts_text_from_pdf(monkeypatch, tmp_path):
     f.write_bytes(b"%PDF-1.4\n")
 
     with patch("goldman.documents.extract_text_from_pdf") as mock_extract:
-        mock_extract.return_value = "Extracted PDF text."
+        mock_extract.return_value = (
+            "Extracted PDF text. " * 5  # >50 chars so OCR fallback is skipped
+        )
 
         storage = MagicMock()
         doc_repo = MagicMock()
