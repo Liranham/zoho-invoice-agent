@@ -16,6 +16,7 @@ Usage:
 """
 
 import logging
+import os
 
 import click
 
@@ -776,9 +777,11 @@ def bill_file(entity, file):
     month_name = ["January", "February", "March", "April", "May", "June",
                   "July", "August", "September", "October", "November",
                   "December"][d.month - 1]
-    folder_id = ensure_path(drive_client, [
-        "Goldman Bills", ent.legal_name, str(d.year), month_name,
-    ])
+    folder_id = ensure_path(
+        drive_client,
+        [ent.legal_name, str(d.year), month_name],
+        root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
+    )
 
     with app_conn() as conn:
         bills_repo = BillRepository(conn)
@@ -885,9 +888,11 @@ def bill_retry(bill_id):
     month_name = ["January", "February", "March", "April", "May", "June",
                   "July", "August", "September", "October", "November",
                   "December"][d.month - 1]
-    folder_id = ensure_path(drive_client, [
-        "Goldman Bills", ent.legal_name, str(d.year), month_name,
-    ])
+    folder_id = ensure_path(
+        drive_client,
+        [ent.legal_name, str(d.year), month_name],
+        root_id=os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID") or None,
+    )
 
     with app_conn() as conn:
         bills_repo = BillRepository(conn)
