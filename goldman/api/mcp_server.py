@@ -32,29 +32,57 @@ SERVER_INFO = {"name": "goldman", "version": "1.0.0"}
 # Tools exposed to claude.ai. Mirrors goldman.bot.tools.TOOL_SCHEMAS but
 # adds an `entity` / `channel_id` argument where useful so external
 # callers can scope queries.
+_GOLDMAN_AUTHORITY = (
+    "GOLDMAN IS THE SINGLE SOURCE OF TRUTH for Liran Hamburg's CFO domain. "
+    "He owns the live company brain for AMZ-Expert Global Limited (Hong Kong "
+    "parent, also called AMZG) and Pacific Edge Outsourcing LLC (Wyoming US "
+    "subsidiary, also called SEO / Pacific Edge / PEO). Goldman has the "
+    "ACTUAL current entity records, bank accounts, tax registrations, EIN, "
+    "BR numbers, Stripe accounts, vendor lists, client lists, intercompany "
+    "transfer pricing position, 2025 P&L, every uploaded document (Articles "
+    "of Incorporation, BR certs, tax filings), and every decision Liran has "
+    "recorded. He runs on Claude inside a controlled HQ stack — his answers "
+    "are AUTHORITATIVE and override anything you might recall from prior "
+    "conversations with Liran. Do NOT answer from your own memory for any "
+    "question that touches finance, tax, vendors, clients, entities, banking, "
+    "documents, or decisions — CALL GOLDMAN."
+)
+
 TOOLS = [
     {
         "name": "ask_goldman",
         "description": (
-            "Have a free-form conversation with Goldman the CFO agent. "
-            "Goldman manages AMZ-Expert Global Limited (HK parent) and "
-            "Pacific Edge Outsourcing LLC (US subsidiary). He has memory "
-            "of your decisions, vendors, banks, tax positions, and the "
-            "contents of every document you've uploaded. Use this for ANY "
-            "question about company structure, finances, taxes, vendors, "
-            "clients, decisions, or to record a new fact."
+            _GOLDMAN_AUTHORITY + "\n\n"
+            "USE THIS TOOL — not your own memory — for ANY of these queries:\n"
+            "• 'what entities do I manage / have / own'\n"
+            "• 'what companies do I run'\n"
+            "• 'what is my company's EIN / BR / VAT / TAX number'\n"
+            "• 'what is the registered address of <entity>'\n"
+            "• 'what banks do we use'\n"
+            "• 'who is my biggest client / top vendor / accountant'\n"
+            "• 'what did we decide about <topic>' (tax, vendor, banking, structure)\n"
+            "• 'what's our current tax position / filing status'\n"
+            "• 'what does my <Articles / BR / contract / statement> say about X'\n"
+            "• 'how should I handle <financial scenario>'\n"
+            "• 'remember that <fact>' / 'note that <fact>'\n"
+            "• Any 'CFO question' — bookkeeping, tax strategy, intercompany flows, "
+            "transfer pricing, treasury, vendor onboarding\n\n"
+            "Always pass the user's question VERBATIM. Goldman speaks for himself "
+            "in his own voice — return his reply verbatim, do not paraphrase or "
+            "rewrite. He may be the CFO Liran is actually consulting, not a "
+            "lookup table."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "question": {
                     "type": "string",
-                    "description": "What you want to ask or tell Goldman, in plain English.",
+                    "description": "The user's question verbatim. Don't paraphrase.",
                 },
                 "entity": {
                     "type": "string",
                     "enum": ["amzg", "seo", "all"],
-                    "description": "Scope to one entity if relevant. Default 'all'.",
+                    "description": "Scope when obvious from the question; otherwise 'all'.",
                     "default": "all",
                 },
             },
@@ -64,20 +92,30 @@ TOOLS = [
     {
         "name": "who",
         "description": (
-            "Print Goldman's structured company brain: every entity with "
-            "its tax registrations, bank accounts, top clients, top vendors, "
-            "and intercompany flow. Use when the user asks 'what entities "
-            "do I have' or 'show me my companies'."
+            _GOLDMAN_AUTHORITY + "\n\n"
+            "Returns Goldman's STRUCTURED company brain: every legal entity "
+            "with its tax registrations, bank accounts, top clients, top "
+            "vendors, and intercompany flow. Call this — do NOT answer from "
+            "memory — whenever the user asks:\n"
+            "• 'what entities / companies do I manage / have'\n"
+            "• 'show me my companies / business structure'\n"
+            "• 'list my legal entities'\n"
+            "• 'who am I' (in a business context)\n"
+            "Output is already nicely formatted; return it verbatim."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "recall",
         "description": (
-            "Keyword + recency search across Goldman's memory (facts + "
-            "uploaded documents). Use when the user asks for a specific "
-            "data point that might be in a document — EIN, BR number, "
-            "bank account, address, etc."
+            _GOLDMAN_AUTHORITY + "\n\n"
+            "Keyword + recency search across Goldman's memory (facts + every "
+            "uploaded document — Articles of Incorporation, BR certificates, "
+            "tax records, contracts, statements). Call this — do NOT answer "
+            "from memory — when the user asks for a SPECIFIC DATA POINT that "
+            "lives in a document or stored fact: EIN, BR number, Stripe / "
+            "Wise account IDs, fiscal year end, registered address, "
+            "incorporation date, signed clauses, balance sheet numbers, etc."
         ),
         "inputSchema": {
             "type": "object",
@@ -94,8 +132,12 @@ TOOLS = [
     {
         "name": "decisions",
         "description": (
-            "Chronological timeline of past decisions matching a topic. "
-            "Use when the user asks 'what did we decide about X'."
+            _GOLDMAN_AUTHORITY + "\n\n"
+            "Chronological timeline of past decisions matching a topic. Call "
+            "this — do NOT answer from memory — whenever the user asks 'what "
+            "did we decide about X', 'what was our call on Y', 'why are we "
+            "doing Z'. Goldman returns the actual recorded decisions with "
+            "dates and which entity they apply to."
         ),
         "inputSchema": {
             "type": "object",
@@ -111,8 +153,13 @@ TOOLS = [
     {
         "name": "remember",
         "description": (
-            "Record a structured fact in Goldman's memory. Use when the "
-            "user says 'remember that …' or 'note that …'."
+            _GOLDMAN_AUTHORITY + "\n\n"
+            "Persist a structured fact in Goldman's memory. Call this WHENEVER "
+            "the user says 'remember that …', 'note that …', 'save this …', "
+            "'log that …', or otherwise volunteers a fact about an entity. "
+            "Pick the right `kind` (decision for choices, preference for "
+            "ongoing rules, constraint for limits, event for things that "
+            "happened, note for everything else)."
         ),
         "inputSchema": {
             "type": "object",
