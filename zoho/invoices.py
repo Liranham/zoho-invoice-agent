@@ -64,6 +64,7 @@ class InvoiceService:
         payment_terms: int = 30,
         notes: str = "",
         invoice_number: str = "",
+        contact_persons: list[str] | None = None,
     ) -> Invoice:
         body = {
             "customer_id": customer_id,
@@ -76,6 +77,8 @@ class InvoiceService:
             body["notes"] = notes
         if invoice_number:
             body["invoice_number"] = invoice_number
+        if contact_persons:
+            body["contact_persons"] = contact_persons
 
         data = self.client.post("invoices", json=body)
         inv = data.get("invoice", data)
@@ -84,6 +87,11 @@ class InvoiceService:
             inv.get("invoice_id"),
             inv.get("invoice_number"),
         )
+        return self._parse(inv)
+
+    def update_invoice(self, invoice_id: str, **fields) -> Invoice:
+        data = self.client.put(f"invoices/{invoice_id}", json=fields)
+        inv = data.get("invoice", data)
         return self._parse(inv)
 
     def delete_invoice(self, invoice_id: str) -> bool:

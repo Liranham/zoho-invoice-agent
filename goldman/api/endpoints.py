@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from goldman.ask import ask_goldman
 from goldman.decisions import decision_timeline
 from goldman.embeddings import EmbeddingClient
 from goldman.who import build_who_view
@@ -163,6 +164,29 @@ def handle_status(*, query: dict, body: dict) -> tuple:
         "pending_confirmations": pending_confs,
         "facts_awaiting_embedding": facts_to_embed,
     }
+
+
+def handle_ask(*, query: dict, body: dict) -> tuple:
+    body = body or {}
+    question = (body.get("question") or "").strip()
+    if not question:
+        return 400, {"error": "Missing or empty 'question' in body."}
+
+    channel_id = (body.get("channel_id") or "claude-code-default").strip()
+    entity_slug = body.get("entity")
+    front_door = body.get("front_door") or "claude_code"
+
+    try:
+        result = ask_goldman(
+            question=question,
+            channel_id=channel_id,
+            front_door=front_door,
+            entity_slug=entity_slug,
+        )
+    except ValueError as e:
+        return 400, {"error": str(e)}
+
+    return 200, result
 
 
 def handle_decisions(*, query: dict, body: dict) -> tuple:

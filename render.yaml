@@ -28,3 +28,28 @@ services:
         value: "true"
       - key: SCHEDULER_RECURRING_CRON
         sync: false
+      # Wise direct-API (primary path)
+      - key: WISE_ENABLED
+        value: "true"
+      - key: WISE_API_TOKEN
+        sync: false
+      - key: WISE_PRIVATE_KEY_B64
+        sync: false
+      - key: WISE_PROFILE_ID
+        sync: false
+      - key: WISE_WEBHOOK_BASE_URL
+        sync: false
+      # Gmail flow stays dormant until Wise path is proven
+      - key: GMAIL_ENABLED
+        value: "false"
+      - key: GMAIL_CREDENTIALS_B64
+        sync: false
+      - key: GMAIL_TOKEN_B64
+        sync: false
+      # Telegram (shared by both flows)
+      - key: TELEGRAM_ENABLED
+        value: "true"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

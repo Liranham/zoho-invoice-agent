@@ -67,6 +67,17 @@ class ContactService:
 
         raise ValueError(f"Customer not found: {name}")
 
+    def get_contact_person_ids(self, customer_id: str) -> list[str]:
+        """Return the customer's contact_person_ids, primary first.
+
+        Required for invoice email-send to succeed; Zoho rejects /email
+        with "no contact persons associated" when none are attached.
+        """
+        data = self.client.get(f"contacts/{customer_id}")
+        persons = data.get("contact", {}).get("contact_persons", [])
+        persons.sort(key=lambda p: not p.get("is_primary_contact"))
+        return [p["contact_person_id"] for p in persons if p.get("contact_person_id")]
+
     def create_contact(
         self,
         contact_name: str,

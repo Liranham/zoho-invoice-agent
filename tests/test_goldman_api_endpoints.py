@@ -8,7 +8,53 @@ from uuid import uuid4
 from goldman.api.endpoints import (
     handle_who, handle_recall, handle_remember,
     handle_pending_bills, handle_status, handle_decisions,
+    handle_ask,
 )
+
+
+def test_handle_ask_returns_answer():
+    with patch("goldman.api.endpoints.ask_goldman") as mock_ask:
+        mock_ask.return_value = {
+            "answer": "AMZ Expert Global Limited (HK).",
+            "entity": "amzg",
+            "session_id": "s-1",
+        }
+        code, body = handle_ask(
+            query={}, body={"question": "what's our HK entity?"}
+        )
+        assert code == 200
+        assert body["answer"] == "AMZ Expert Global Limited (HK)."
+        assert body["entity"] == "amzg"
+        assert mock_ask.call_args.kwargs["question"] == "what's our HK entity?"
+        assert mock_ask.call_args.kwargs["channel_id"] == "claude-code-default"
+
+
+def test_handle_ask_rejects_missing_question():
+    code, body = handle_ask(query={}, body={})
+    assert code == 400
+    assert "question" in body["error"].lower()
+
+
+def test_handle_ask_rejects_empty_question():
+    code, body = handle_ask(query={}, body={"question": "   "})
+    assert code == 400
+
+
+def test_handle_ask_passes_channel_and_entity():
+    with patch("goldman.api.endpoints.ask_goldman") as mock_ask:
+        mock_ask.return_value = {
+            "answer": "ok", "entity": "seo", "session_id": "s-2",
+        }
+        handle_ask(query={}, body={
+            "question": "US LLC filing deadline?",
+            "entity": "seo",
+            "channel_id": "liran-mac",
+            "front_door": "claude-code",
+        })
+        kwargs = mock_ask.call_args.kwargs
+        assert kwargs["channel_id"] == "liran-mac"
+        assert kwargs["entity_slug"] == "seo"
+        assert kwargs["front_door"] == "claude-code"
 
 
 def test_handle_who_returns_summary_list():

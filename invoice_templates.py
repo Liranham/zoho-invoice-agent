@@ -154,4 +154,5 @@ class InvoiceGenerator:
             "line_items": line_items,
             "notes": full_notes,
             "payment_terms": 0,  # Due immediately
+            "invoice_number": invoice_number,
         }

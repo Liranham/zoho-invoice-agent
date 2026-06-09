@@ -106,6 +106,8 @@ def get_customer_id(contact_service: ContactService, client_name: str) -> str:
     raise ValueError(f"Customer not found in Zoho: {client_name}")
 
 
+
+
 @click.command()
 @click.argument("csv_file", type=click.Path(exists=True))
 @click.option("--dry-run", is_flag=True, help="Preview invoices without creating")
@@ -189,6 +191,8 @@ def main(csv_file: str, dry_run: bool, skip_existing: bool, send_email: bool):
                 customer_id = get_customer_id(contact_service, txn["client_name"])
                 invoice_data["customer_id"] = customer_id
 
+                contact_person_ids = contact_service.get_contact_person_ids(customer_id)
+
                 # Create invoice
                 invoice = invoice_service.create_invoice(
                     customer_id=invoice_data["customer_id"],
@@ -196,6 +200,7 @@ def main(csv_file: str, dry_run: bool, skip_existing: bool, send_email: bool):
                     date=invoice_data["date"],
                     payment_terms=invoice_data["payment_terms"],
                     notes=invoice_data["notes"],
+                    contact_persons=contact_person_ids,
                 )
 
                 click.echo(
