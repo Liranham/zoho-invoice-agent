@@ -33,9 +33,42 @@ def extract_text_from_pdf(file_path: Path) -> str:
     return "\n\n".join(pages).strip()
 
 
+def extract_text_from_docx(file_path: Path) -> str:
+    """Pull paragraphs + table cell text out of a .docx."""
+    from docx import Document
+    doc = Document(str(file_path))
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts).strip()
+
+
+def extract_text_from_xlsx(file_path: Path) -> str:
+    """Pull cell values out of every sheet as pipe-separated rows."""
+    from openpyxl import load_workbook
+    wb = load_workbook(str(file_path), read_only=True, data_only=True)
+    parts = []
+    for sheet in wb.worksheets:
+        parts.append(f"## Sheet: {sheet.title}")
+        for row in sheet.iter_rows(values_only=True):
+            cells = [str(c) for c in row if c is not None and str(c).strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+        parts.append("")
+    return "\n".join(parts).strip()
+
+
 def _read_text(file_path: Path, mime_type: str) -> str:
     if mime_type == "application/pdf":
         return extract_text_from_pdf(file_path)
+    suffix = file_path.suffix.lower()
+    if suffix == ".docx" or mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        return extract_text_from_docx(file_path)
+    if suffix == ".xlsx" or mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+        return extract_text_from_xlsx(file_path)
     return file_path.read_text(errors="replace")
 
 

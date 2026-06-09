@@ -17,11 +17,14 @@ from goldman.keyword_recall import keyword_recall
 TOOL_SCHEMAS = [
     {
         "name": "recall",
-        "description": "Search Goldman's memory (facts, conversations, documents) for relevant context. Use when the user asks about prior decisions, advice, or document content.",
+        "description": "Search Goldman's memory (facts + uploaded documents) for relevant context. Use when the user asks about prior decisions, advice, contract clauses, EIN/BR numbers, addresses, or anything that might live in an uploaded document. By default searches BOTH entities; pass entity='amzg' or entity='seo' only when you want to scope to one company.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "The query in natural language."},
+                "entity": {"type": "string", "enum": ["amzg", "seo", "all"],
+                            "description": "Which entity to scope to. Default 'all' = search across both companies.",
+                            "default": "all"},
                 "top_n": {"type": "integer", "default": 8},
             },
             "required": ["question"],
@@ -121,11 +124,14 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
 def _recall(ctx, args) -> str:
     question = args["question"]
     top_n = int(args.get("top_n", 8))
+    requested_entity = (args.get("entity") or "all").lower()
+
     entity_id = None
-    if ctx.entity_slug:
-        ent = EntityRepository(ctx.conn).get_by_slug(ctx.entity_slug)
+    if requested_entity not in ("all", ""):
+        ent = EntityRepository(ctx.conn).get_by_slug(requested_entity)
         if ent:
             entity_id = ent.id
+
     results = keyword_recall(
         ctx.conn, query_text=question,
         entity_id=entity_id, top_n=top_n,
