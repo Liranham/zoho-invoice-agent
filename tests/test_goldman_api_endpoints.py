@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from goldman.api.endpoints import (
     handle_who, handle_recall, handle_remember,
-    handle_pending_bills, handle_status,
+    handle_pending_bills, handle_status, handle_decisions,
 )
 
 
@@ -114,3 +114,37 @@ def test_handle_status_returns_service_health():
         assert code == 200
         assert body["service"] == "goldman"
         assert "entities" in body
+
+
+def test_handle_decisions_returns_decision_list():
+    fake_results = [
+        {"id": uuid4(),
+         "fact": "Hire UK accountant for VAT filings",
+         "entity_slug": "amzg",
+         "created_at": "2026-06-08T00:00:00+00:00",
+         "supersedes_id": None},
+    ]
+    with patch("goldman.api.endpoints.app_conn") as mock_conn, \
+         patch("goldman.api.endpoints.decision_timeline",
+                return_value=fake_results):
+        mock_conn.return_value.__enter__.return_value = MagicMock()
+
+        code, body = handle_decisions(
+            query={}, body={"topic": "VAT", "entity": "amzg"},
+        )
+
+        assert code == 200
+        assert "decisions" in body
+        assert len(body["decisions"]) == 1
+        assert body["decisions"][0]["fact"] == "Hire UK accountant for VAT filings"
+
+
+def test_handle_decisions_400_when_topic_missing():
+    code, body = handle_decisions(query={}, body={})
+    assert code == 400
+    assert "topic" in body["error"].lower()
+
+
+def test_handle_decisions_400_when_topic_blank():
+    code, body = handle_decisions(query={}, body={"topic": "   "})
+    assert code == 400

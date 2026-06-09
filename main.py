@@ -61,7 +61,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         from goldman.api.auth import is_authorized
         from goldman.api.endpoints import (
             handle_who, handle_recall, handle_remember,
-            handle_pending_bills, handle_status,
+            handle_pending_bills, handle_status, handle_decisions,
         )
 
         if not is_authorized(dict(self.headers)):
@@ -92,6 +92,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
                 code, payload = handle_remember(query=query, body=body)
             elif path == "/v1/bills/pending":
                 code, payload = handle_pending_bills(query=query, body=body)
+            elif path == "/v1/decisions":
+                code, payload = handle_decisions(query=query, body=body)
             elif path == "/v1/status":
                 code, payload = handle_status(query=query, body=body)
             else:

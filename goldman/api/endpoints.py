@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from goldman.decisions import decision_timeline
 from goldman.embeddings import EmbeddingClient
 from goldman.who import build_who_view
 from goldman_db.bills import BillRepository
@@ -161,4 +162,30 @@ def handle_status(*, query: dict, body: dict) -> tuple:
         "pending_bills": pending_bills,
         "pending_confirmations": pending_confs,
         "facts_awaiting_embedding": facts_to_embed,
+    }
+
+
+def handle_decisions(*, query: dict, body: dict) -> tuple:
+    body = body or {}
+    topic = (body.get("topic") or "").strip()
+    if not topic:
+        return 400, {"error": "Missing or empty 'topic' in body."}
+
+    entity = body.get("entity")
+    limit = int(body.get("limit", 20))
+
+    with app_conn() as conn:
+        results = decision_timeline(
+            conn=conn, topic=topic, entity_slug=entity, limit=limit,
+        )
+
+    return 200, {
+        "decisions": [
+            {"id": str(r["id"]),
+             "fact": r["fact"],
+             "entity_slug": r["entity_slug"],
+             "created_at": r["created_at"],
+             "supersedes_id": str(r["supersedes_id"]) if r["supersedes_id"] else None}
+            for r in results
+        ],
     }
