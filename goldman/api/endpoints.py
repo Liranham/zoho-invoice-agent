@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from goldman.ask import ask_goldman
 from goldman.decisions import decision_timeline
-from goldman.embeddings import EmbeddingClient
+from goldman.keyword_recall import keyword_recall
 from goldman.who import build_who_view
 from goldman_db.bills import BillRepository
 from goldman_db.connection import app_conn
 from goldman_db.entities import EntityRepository
 from goldman_db.facts import FactRepository
-from goldman_db.hybrid_search import hybrid_search
 
 
 def _serialise_summary(s) -> dict:
@@ -76,17 +75,14 @@ def handle_recall(*, query: dict, body: dict) -> tuple:
     entity_slug = (body or {}).get("entity") or (query.get("entity", [None])[0] if query else None)
     top_n = int((body or {}).get("top", 10))
 
-    embedder = EmbeddingClient()
-    vec = embedder.embed_batch([question])[0]
-
     with app_conn() as conn:
         entity_id = None
         if entity_slug:
             ent = EntityRepository(conn).get_by_slug(entity_slug.lower())
             if ent:
                 entity_id = ent.id
-        results = hybrid_search(
-            conn, query_embedding=vec, query_text=question,
+        results = keyword_recall(
+            conn, query_text=question,
             entity_id=entity_id, top_n=top_n,
         )
 
@@ -154,15 +150,11 @@ def handle_status(*, query: dict, body: dict) -> tuple:
             pending_bills = cur.fetchone()[0]
             cur.execute("SELECT count(*) FROM goldman.pending_confirmations WHERE answered_at IS NULL")
             pending_confs = cur.fetchone()[0]
-            cur.execute("SELECT count(*) FROM goldman.facts WHERE embedding IS NULL")
-            facts_to_embed = cur.fetchone()[0]
-
     return 200, {
         "service": "goldman",
         "entities": entities,
         "pending_bills": pending_bills,
         "pending_confirmations": pending_confs,
-        "facts_awaiting_embedding": facts_to_embed,
     }
 
 

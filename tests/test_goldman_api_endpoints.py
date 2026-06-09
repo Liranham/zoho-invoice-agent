@@ -92,16 +92,13 @@ def test_handle_who_returns_summary_list():
         assert tp["filename"] == "transfer_pricing_hk_us_v1.md"
 
 
-def test_handle_recall_returns_results(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test")
+def test_handle_recall_returns_results():
     with patch("goldman.api.endpoints.app_conn") as mock_conn, \
-         patch("goldman.api.endpoints.EmbeddingClient") as mock_emb, \
-         patch("goldman.api.endpoints.hybrid_search") as mock_search:
+         patch("goldman.api.endpoints.keyword_recall") as mock_search:
         mock_conn.return_value.__enter__.return_value = MagicMock()
-        mock_emb.return_value.embed_batch.return_value = [[0.1] * 1536]
         mock_search.return_value = [
             MagicMock(source_type="fact", source_id=uuid4(),
-                       excerpt="UK VAT registered", score=0.42,
+                       excerpt="UK VAT registered", score=2.0,
                        entity_id=None, metadata={}),
         ]
 

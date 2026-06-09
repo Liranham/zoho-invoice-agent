@@ -73,12 +73,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_text = update.message.text or ""
     session_id = _session_id_for_today(chat_id)
 
-    embedder = None
-    try:
-        from goldman.embeddings import EmbeddingClient
-        embedder = EmbeddingClient()
-    except Exception:
-        embedder = None
+    embedder = None  # Anthropic-only build — keyword_recall replaces embeddings.
 
     llm = GoldmanLLM()
 

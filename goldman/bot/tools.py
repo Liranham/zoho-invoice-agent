@@ -11,7 +11,7 @@ from typing import Optional
 
 from goldman.decisions import decision_timeline
 from goldman_db.entities import EntityRepository
-from goldman_db.hybrid_search import hybrid_search
+from goldman.keyword_recall import keyword_recall
 
 
 TOOL_SCHEMAS = [
@@ -121,23 +121,20 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
 def _recall(ctx, args) -> str:
     question = args["question"]
     top_n = int(args.get("top_n", 8))
-    if ctx.embedder is None:
-        return "Recall unavailable: OPENAI_API_KEY not configured."
-    vec = ctx.embedder.embed_batch([question])[0]
     entity_id = None
     if ctx.entity_slug:
         ent = EntityRepository(ctx.conn).get_by_slug(ctx.entity_slug)
         if ent:
             entity_id = ent.id
-    results = hybrid_search(
-        ctx.conn, query_embedding=vec, query_text=question,
+    results = keyword_recall(
+        ctx.conn, query_text=question,
         entity_id=entity_id, top_n=top_n,
     )
     if not results:
         return f"No memory entries match: {question!r}."
     lines = [f"Top {len(results)} matches:"]
     for i, r in enumerate(results, 1):
-        lines.append(f"{i}. [{r.source_type}] score={r.score:.3f} :: {r.excerpt[:200]}")
+        lines.append(f"{i}. [{r.source_type}] score={r.score:.1f} :: {r.excerpt[:200]}")
     return "\n".join(lines)
 
 

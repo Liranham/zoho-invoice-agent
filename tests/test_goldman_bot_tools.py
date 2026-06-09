@@ -19,15 +19,14 @@ def test_tool_schemas_have_expected_names():
     assert "list_pending_confirmations" in names
 
 
-def test_execute_recall_runs_hybrid_search():
+def test_execute_recall_runs_keyword_recall():
     ctx = MagicMock()
     ctx.entity_slug = "amzg"
-    ctx.embedder.embed_batch.return_value = [[0.1] * 1536]
     ctx.conn = MagicMock()
     fake_results = [MagicMock(source_type="fact", source_id=uuid4(),
-                              excerpt="hello", score=0.5, entity_id=None,
+                              excerpt="hello", score=2.0, entity_id=None,
                               metadata={})]
-    with patch("goldman.bot.tools.hybrid_search", return_value=fake_results), \
+    with patch("goldman.bot.tools.keyword_recall", return_value=fake_results), \
          patch("goldman.bot.tools.EntityRepository") as mock_er:
         mock_er.return_value.get_by_slug.return_value = MagicMock(id=uuid4())
         result = execute_tool(

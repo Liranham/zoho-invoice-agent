@@ -46,13 +46,6 @@ def ask_goldman(
     if not question or not question.strip():
         raise ValueError("question must be a non-empty string")
 
-    embedder = None
-    try:
-        from goldman.embeddings import EmbeddingClient
-        embedder = EmbeddingClient()
-    except Exception:
-        embedder = None
-
     llm = GoldmanLLM()
 
     with app_conn() as conn:
@@ -85,7 +78,7 @@ def ask_goldman(
 
         ctx = ToolContext(
             conn=conn, entity_slug=effective_entity,
-            chat_id=channel_id, embedder=embedder,
+            chat_id=channel_id, embedder=None,
             bot_session_repo=bot_sessions,
         )
 
