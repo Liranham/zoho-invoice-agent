@@ -103,3 +103,29 @@ def test_document_list_by_entity():
 
     assert len(docs) == 1
     assert docs[0].filename == "letter.pdf"
+
+
+def test_document_insert_with_pack_metadata():
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    new_id = uuid4()
+    cur.fetchone.return_value = (new_id,)
+
+    repo = DocumentRepository(conn)
+    returned = repo.insert(
+        entity_id=None,
+        filename="us_llc_tax_v1.md",
+        mime_type="text/markdown",
+        source="knowledge_pack",
+        original_storage_path="packs/us_llc_tax/v1-2026-06/us_llc_tax_v1.md",
+        pack_topic="us_llc_tax",
+        pack_version="v1-2026-06",
+    )
+
+    assert returned == new_id
+    sql = str(cur.execute.call_args)
+    assert "pack_topic" in sql
+    assert "pack_version" in sql
+    params = cur.execute.call_args[0][1]
+    assert "us_llc_tax" in params
+    assert "v1-2026-06" in params

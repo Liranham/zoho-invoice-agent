@@ -68,16 +68,20 @@ class DocumentRepository:
         mime_type: Optional[str],
         source: str,
         original_storage_path: str,
+        pack_topic: Optional[str] = None,
+        pack_version: Optional[str] = None,
     ) -> UUID:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO goldman.documents
-                    (entity_id, filename, mime_type, source, original_storage_path)
-                VALUES (%s, %s, %s, %s, %s)
+                    (entity_id, filename, mime_type, source,
+                     original_storage_path, pack_topic, pack_version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (entity_id, filename, mime_type, source, original_storage_path),
+                (entity_id, filename, mime_type, source,
+                 original_storage_path, pack_topic, pack_version),
             )
             return cur.fetchone()[0]
 
