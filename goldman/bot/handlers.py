@@ -255,7 +255,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     file_obj = await context.bot.get_file(doc.file_id)
     import tempfile
     import os as _os
-    suffix = _os.path.splitext(getattr(doc, "file_name", "") or ".pdf")[1] or ".pdf"
+    # Telegram Photo objects have no file_name. Default suffix per kind:
+    # photo → .jpg, document → preserve provided extension (fall back to .pdf
+    # only when it's actually a forwarded PDF document).
+    is_photo = bool(msg.photo) and not msg.document
+    if is_photo:
+        suffix = ".jpg"
+    else:
+        suffix = _os.path.splitext(
+            getattr(doc, "file_name", "") or ""
+        )[1] or ".pdf"
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     await file_obj.download_to_drive(tmp.name)
 
@@ -270,7 +279,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     with app_conn() as conn:
         entities = EntityRepository(conn).list_all()
     known = [e.legal_name for e in entities]
-    parse = parse_bill_file(Path(tmp.name), llm=llm, known_entities=known)
+    try:
+        parse = parse_bill_file(Path(tmp.name), llm=llm, known_entities=known)
+    except Exception as e:
+        logger.exception("Bill parser failed on %s: %s", tmp.name, e)
+        # Don't leave Liran staring at a silent bot. Route the file to the
+        # general-document pipeline so it still lands in memory + Drive.
+        await msg.reply_text(
+            "Couldn't read that as a bill — it might be a screenshot, "
+            "a chart, or a general document. Filing it as a document.",
+        )
+        await _intake_general_document(
+            update=update, tmp_path=tmp.name,
+            original_filename=getattr(doc, "file_name", None) or f"telegram-upload{suffix}",
+            entities=entities, llm=llm,
+        )
+        return
 
     entity_slug = None
     for e in entities:
