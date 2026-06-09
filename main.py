@@ -39,6 +39,13 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._handle_api(method="GET")
         elif self.path.startswith("/invoices"):
             self._handle_list_invoices()
+        elif self.path == "/mcp" or self.path.startswith("/mcp?"):
+            # MCP discovery on GET — claude.ai pings to confirm the
+            # server is reachable before opening the JSON-RPC POST channel.
+            self._json_response(200, {
+                "name": "goldman", "version": "1.0.0",
+                "protocol": "mcp", "transport": "streamable-http",
+            })
         else:
             self._json_response(404, {"error": "not found"})
 
@@ -47,6 +54,8 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._handle_create_invoice()
         elif self.path.startswith("/v1/"):
             self._handle_api(method="POST")
+        elif self.path == "/mcp" or self.path.startswith("/mcp?") or self.path == "/mcp/":
+            self._handle_mcp()
         elif self.path == "/webhook/gmail":
             self._handle_gmail_webhook()
         elif self.path == "/webhook/wise":
@@ -55,6 +64,27 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._handle_telegram_webhook()
         else:
             self._json_response(404, {"error": "not found"})
+
+    def _handle_mcp(self):
+        from goldman.api.mcp_server import handle_mcp
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(content_length) if content_length else b""
+        except Exception as e:
+            self._json_response(400, {"error": f"bad request: {e}"})
+            return
+        try:
+            code, payload = handle_mcp(headers=dict(self.headers), raw_body=raw)
+        except Exception as e:
+            logger.exception("MCP handler crashed: %s", e)
+            self._json_response(500, {"error": str(e)})
+            return
+        if payload is None:
+            self.send_response(code)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._json_response(code, payload)
 
     def _handle_api(self, method: str):
         from urllib.parse import urlparse, parse_qs
