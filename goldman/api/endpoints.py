@@ -40,6 +40,11 @@ def _serialise_summary(s) -> dict:
             {"name": v.vendor_name, "category": v.category}
             for v in s.top_vendors
         ],
+        # Phase 6.4 cross-entity fields
+        "intercompany_flow": getattr(s, "intercompany_flow", None) or {
+            "count": 0, "total": 0.0, "currency": None, "counterpart": None,
+        },
+        "last_tp_doc": getattr(s, "last_tp_doc", None),
     }
 
 

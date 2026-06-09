@@ -21,7 +21,16 @@ def test_handle_who_returns_summary_list():
                        base_currency="HKD", fiscal_year_end=None,
                        registered_address=None, company_number=None,
                        tax_registrations=[], bank_accounts=[],
-                       top_clients=[], top_vendors=[]),
+                       top_clients=[], top_vendors=[],
+                       intercompany_flow={"count": 2, "total": 800.0,
+                                          "currency": "USD",
+                                          "counterpart": "Specific Edge Outsourcing LLC"},
+                       last_tp_doc={
+                           "filename": "transfer_pricing_hk_us_v1.md",
+                           "source": "knowledge_pack",
+                           "pack_version": "v1-2026-06",
+                           "uploaded_at": "2026-06-09T00:00:00+00:00",
+                       }),
         ]
 
         code, body = handle_who(query={}, body={})
@@ -29,6 +38,12 @@ def test_handle_who_returns_summary_list():
         assert code == 200
         assert "entities" in body
         assert body["entities"][0]["slug"] == "amzg"
+        # Phase 6.4 fields surfaced in serialised JSON:
+        ic = body["entities"][0]["intercompany_flow"]
+        assert ic["count"] == 2
+        assert ic["counterpart"] == "Specific Edge Outsourcing LLC"
+        tp = body["entities"][0]["last_tp_doc"]
+        assert tp["filename"] == "transfer_pricing_hk_us_v1.md"
 
 
 def test_handle_recall_returns_results(monkeypatch):
