@@ -66,6 +66,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": "not found"})
 
     def _handle_mcp(self):
+        from urllib.parse import urlparse, parse_qs
         from goldman.api.mcp_server import handle_mcp
         try:
             content_length = int(self.headers.get("Content-Length", 0))
@@ -73,8 +74,12 @@ class _HealthHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json_response(400, {"error": f"bad request: {e}"})
             return
+        query_token = parse_qs(urlparse(self.path).query).get("key", [""])[0]
         try:
-            code, payload = handle_mcp(headers=dict(self.headers), raw_body=raw)
+            code, payload = handle_mcp(
+                headers=dict(self.headers), raw_body=raw,
+                query_token=query_token,
+            )
         except Exception as e:
             logger.exception("MCP handler crashed: %s", e)
             self._json_response(500, {"error": str(e)})

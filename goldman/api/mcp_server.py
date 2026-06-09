@@ -134,8 +134,15 @@ TOOLS = [
 ]
 
 
-def _is_authorized(headers: dict) -> bool:
-    """Match the Bearer auth used by the existing /v1/* REST endpoints."""
+def _is_authorized(headers: dict, query_token: str = "") -> bool:
+    """Auth in priority order:
+
+    1. `Authorization: Bearer <GOLDMAN_API_KEY>` header (preferred, used by
+       Claude Code plugin + /v1/* REST endpoints).
+    2. `?key=<GOLDMAN_API_KEY>` URL query parameter (fallback for
+       claude.ai custom connectors, which don't support arbitrary Bearer
+       tokens — only OAuth or no-auth).
+    """
     key = os.getenv("GOLDMAN_API_KEY", "")
     if not key:
         return False
@@ -144,7 +151,9 @@ def _is_authorized(headers: dict) -> bool:
         if h in headers and headers[h]:
             auth = headers[h]
             break
-    return auth == f"Bearer {key}"
+    if auth == f"Bearer {key}":
+        return True
+    return query_token == key
 
 
 def _error(req_id, code: int, message: str) -> dict:
@@ -264,12 +273,15 @@ def _run_tool(name: str, arguments: dict) -> str:
     raise ValueError(f"Unknown tool: {name}")
 
 
-def handle_mcp(*, headers: dict, raw_body: bytes) -> tuple:
+def handle_mcp(*, headers: dict, raw_body: bytes,
+                query_token: str = "") -> tuple:
     """Top-level MCP HTTP handler. Returns (status_code, response_body_dict_or_list_or_None).
 
     JSON-RPC 2.0 envelope. Responds with `{}` (or empty for notifications).
+    `query_token` is the `?key=` URL parameter — used by clients that
+    cannot send a Bearer header (claude.ai custom connectors).
     """
-    if not _is_authorized(headers):
+    if not _is_authorized(headers, query_token=query_token):
         return 401, {
             "jsonrpc": "2.0", "id": None,
             "error": {"code": -32001, "message": "Unauthorized"},
