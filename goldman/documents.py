@@ -49,8 +49,8 @@ class UploadResult:
 def upload_document(
     *,
     file_path: Path,
-    entity_id: UUID,
-    entity_slug: str,
+    entity_id: Optional[UUID],
+    entity_slug: Optional[str],
     storage,
     doc_repo,
     chunk_repo,
@@ -59,6 +59,9 @@ def upload_document(
     source: str = "uploaded",
     chunk_max_tokens: int = 512,
     chunk_overlap_tokens: int = 64,
+    pack_topic: Optional[str] = None,
+    pack_version: Optional[str] = None,
+    storage_path_override: Optional[str] = None,
 ) -> UploadResult:
     """Upload one document end-to-end.
 
@@ -66,14 +69,21 @@ def upload_document(
     doc_repo     — DocumentRepository instance
     chunk_repo   — DocumentChunkRepository instance
     summariser   — anything with .summarise(text) -> str
+
+    For knowledge packs: pass storage_path_override (e.g.
+    'packs/{topic}/{version}/...'), source='knowledge_pack', pack_topic,
+    pack_version, and entity_id=entity_slug=None.
     """
     mime_type, _ = mimetypes.guess_type(file_path.name)
     mime_type = mime_type or "application/octet-stream"
 
     # 1. Storage upload
     body = file_path.read_bytes()
-    year = datetime.utcnow().year
-    storage_path = f"{entity_slug}/{year}/{uuid4().hex[:8]}-{_safe_filename(file_path.name)}"
+    if storage_path_override is not None:
+        storage_path = storage_path_override
+    else:
+        year = datetime.utcnow().year
+        storage_path = f"{entity_slug}/{year}/{uuid4().hex[:8]}-{_safe_filename(file_path.name)}"
     storage.upload(
         bucket=bucket,
         path=storage_path,
@@ -88,6 +98,8 @@ def upload_document(
         mime_type=mime_type,
         source=source,
         original_storage_path=storage_path,
+        pack_topic=pack_topic,
+        pack_version=pack_version,
     )
 
     # 3. Extract text and chunk
