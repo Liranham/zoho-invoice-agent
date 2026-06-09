@@ -1,5 +1,5 @@
 ---
-description: Print Goldman's company tree (entities, registrations, banks, top clients/vendors).
+description: Print Goldman's company tree (entities, registrations, banks, top clients/vendors, intercompany flow, TP documentation).
 allowed-tools: Bash(curl:*), Bash(jq:*)
 ---
 
@@ -20,6 +20,16 @@ curl -s -H "Authorization: Bearer $KEY" "$URL/v1/who" | \
     "\n  Tax registrations: \(.tax_registrations | length)" +
     "\n  Bank accounts:     \(.bank_accounts | length)" +
     "\n  Top clients:       \(.top_clients | length)" +
-    "\n  Top vendors:       \(.top_vendors | length)"
+    "\n  Top vendors:       \(.top_vendors | length)" +
+    "\n  Intercompany flow (30d): \(
+        if (.intercompany_flow.count // 0) > 0 then
+          "-> \(.intercompany_flow.counterpart): \(.intercompany_flow.total) \(.intercompany_flow.currency) across \(.intercompany_flow.count) bill(s)"
+        else "(none)" end
+      )" +
+    "\n  TP documentation:   \(
+        if .last_tp_doc then
+          "\(.last_tp_doc.filename) (\(.last_tp_doc.uploaded_at[0:10]))"
+        else "(none on file)" end
+      )"
   '
 ```
