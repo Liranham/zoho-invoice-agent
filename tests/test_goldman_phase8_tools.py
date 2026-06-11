@@ -44,19 +44,26 @@ def test_draft_email_validates_required_fields():
 
 def test_create_invoice_validates_entity():
     ctx = MagicMock()
+    # No such entity → guardrail (Phase 9) refuses, listing both options.
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = None
     result = execute_tool(
         ctx=ctx, name="create_invoice",
         arguments={"entity": "bogus", "customer_id": "x", "amount": 1},
     )
-    assert "amzg" in result.lower() and "seo" in result.lower()
+    assert "amz-expert global" in result.lower()
+    assert "pacific edge" in result.lower()
 
 
 def test_list_customers_validates_entity():
     ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = None
     result = execute_tool(
         ctx=ctx, name="list_customers", arguments={"entity": "wrong"},
     )
-    assert "amzg" in result.lower() and "seo" in result.lower()
+    assert "amz-expert global" in result.lower()
+    assert "pacific edge" in result.lower()
 
 
 def test_search_emails_uses_gmail_client(monkeypatch):
