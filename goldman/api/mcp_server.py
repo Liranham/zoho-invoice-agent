@@ -178,6 +178,137 @@ TOOLS = [
             "required": ["text"],
         },
     },
+    # ---- Phase 8: Gmail tools ----
+    {
+        "name": "search_emails",
+        "description": "Search Liran's Gmail. Use Gmail search syntax: 'from:foo@bar.com subject:invoice after:2026/01/01 has:attachment'. Returns up to N message summaries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_email_thread",
+        "description": "Open a Gmail thread end-to-end after search_emails returned a thread_id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"thread_id": {"type": "string"}},
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": "Create a DRAFT in Liran's Gmail (Liran sends it from Gmail; Goldman never auto-sends). Pass thread_id when drafting a reply.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "in_reply_to_message_id": {"type": "string"},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    # ---- Phase 8: Drive tools ----
+    {
+        "name": "list_drive_folder",
+        "description": "List files + subfolders directly under a Drive folder. Default: the configured root.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "folder_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    },
+    {
+        "name": "read_drive_file",
+        "description": "Read the contents of a Drive file Goldman uploaded.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}},
+            "required": ["file_id"],
+        },
+    },
+    # ---- Phase 8: Zoho Books tools (per-entity) ----
+    {
+        "name": "create_invoice",
+        "description": "Create a Zoho Books invoice for amzg or seo. customer_id + amount required.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "customer_id": {"type": "string"},
+                "amount": {"type": "number"},
+                "description": {"type": "string"},
+                "date": {"type": "string"},
+                "item_id": {"type": "string"},
+            },
+            "required": ["entity", "customer_id", "amount"],
+        },
+    },
+    {
+        "name": "list_customers",
+        "description": "List Zoho Books customers for the given entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "create_customer",
+        "description": "Add a new Zoho Books customer for the given entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "name": {"type": "string"},
+                "company": {"type": "string"},
+                "email": {"type": "string"},
+                "phone": {"type": "string"},
+            },
+            "required": ["entity", "name"],
+        },
+    },
+    {
+        "name": "create_expense",
+        "description": "Record an expense/bill in Zoho Books for the given entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "amount": {"type": "number"},
+                "currency": {"type": "string"},
+                "date": {"type": "string"},
+                "vendor_id": {"type": "string"},
+                "description": {"type": "string"},
+                "account_id": {"type": "string"},
+            },
+            "required": ["entity", "amount"],
+        },
+    },
+    {
+        "name": "send_invoice",
+        "description": "Email a Zoho Books invoice to its customer.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "invoice_id": {"type": "string"},
+            },
+            "required": ["entity", "invoice_id"],
+        },
+    },
 ]
 
 
@@ -316,6 +447,23 @@ def _run_tool(name: str, arguments: dict) -> str:
                 source="user_explicit",
             )
         return f"Recorded fact (id={new_id}, kind={kind}, entity={entity})."
+
+    # Phase 8: route via the bot's execute_tool so MCP + Telegram share dispatch.
+    AGENT_TOOLS = {
+        "search_emails", "read_email_thread", "draft_email",
+        "list_drive_folder", "read_drive_file",
+        "create_invoice", "list_customers", "create_customer",
+        "create_expense", "send_invoice",
+    }
+    if name in AGENT_TOOLS:
+        from goldman.bot.tools import ToolContext, execute_tool
+        with app_conn() as conn:
+            ctx = ToolContext(
+                conn=conn, entity_slug=arguments.get("entity"),
+                chat_id="mcp-claude-ai", embedder=None,
+                bot_session_repo=None,
+            )
+            return execute_tool(ctx=ctx, name=name, arguments=arguments)
 
     raise ValueError(f"Unknown tool: {name}")
 

@@ -17,6 +17,7 @@ from auth.zoho_auth import ZohoAuth
 from goldman_db.entities import EntityRepository
 from zoho.client import ZohoClient
 from zoho.contacts import ContactService
+from zoho.expenses import ExpenseService
 from zoho.invoices import InvoiceService
 from zoho.items import ItemService
 
@@ -144,3 +145,11 @@ def item_service_for(
     entity_repo: Optional[EntityRepository] = None,
 ) -> ItemService:
     return ItemService(for_entity(slug, entity_repo=entity_repo))
+
+
+def expense_service_for(
+    slug: str,
+    *,
+    entity_repo: Optional[EntityRepository] = None,
+) -> ExpenseService:
+    return ExpenseService(for_entity(slug, entity_repo=entity_repo))

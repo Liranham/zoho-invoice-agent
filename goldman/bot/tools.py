@@ -89,6 +89,137 @@ TOOL_SCHEMAS = [
             "required": ["topic"],
         },
     },
+    # ---- Phase 8: Gmail ----
+    {
+        "name": "search_emails",
+        "description": "Search Liran's Gmail. Use Gmail search syntax: 'from:foo@bar.com subject:invoice after:2026/01/01'. Returns up to N message summaries.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "read_email_thread",
+        "description": "Open a Gmail thread end-to-end. Use after search_emails when you need the full body of a conversation.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"thread_id": {"type": "string"}},
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": "Create a DRAFT in Liran's Gmail (he sends it himself). Use for proposed replies, payment reminders, vendor outreach. Pass thread_id to make it a reply, omit for a new email.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "thread_id": {"type": "string", "description": "Optional — for reply drafts."},
+                "in_reply_to_message_id": {"type": "string", "description": "Optional — for proper threading."},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    # ---- Phase 8: Drive ----
+    {
+        "name": "list_drive_folder",
+        "description": "List files + subfolders directly under a Drive folder Goldman knows about. Default: lists the configured root (GOLDMAN_DRIVE_ROOT_FOLDER_ID). Pass folder_id to dive into a subfolder.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder_id": {"type": "string", "description": "Optional. Omit to list the root."},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    },
+    {
+        "name": "read_drive_file",
+        "description": "Read the contents of a Drive file Goldman uploaded. Returns text for text-shaped files; for binary, returns metadata + the webViewLink.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"file_id": {"type": "string"}},
+            "required": ["file_id"],
+        },
+    },
+    # ---- Phase 8: Zoho Books ----
+    {
+        "name": "create_invoice",
+        "description": "Create a new invoice in Zoho Books for the given entity. customer_id + line_items required. Returns the new invoice number.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "customer_id": {"type": "string"},
+                "amount": {"type": "number"},
+                "description": {"type": "string"},
+                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
+                "item_id": {"type": "string", "description": "Optional Zoho item ID."},
+            },
+            "required": ["entity", "customer_id", "amount"],
+        },
+    },
+    {
+        "name": "list_customers",
+        "description": "List Zoho Books customers/contacts for the given entity.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "create_customer",
+        "description": "Add a new customer contact to Zoho Books for the given entity.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "name": {"type": "string"},
+                "company": {"type": "string"},
+                "email": {"type": "string"},
+                "phone": {"type": "string"},
+            },
+            "required": ["entity", "name"],
+        },
+    },
+    {
+        "name": "create_expense",
+        "description": "Record a bill/expense in Zoho Books for the given entity. Use when the user forwards a receipt or bill that should land in Zoho.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "amount": {"type": "number"},
+                "currency": {"type": "string", "default": "USD"},
+                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
+                "vendor_id": {"type": "string", "description": "Optional Zoho vendor contact id."},
+                "description": {"type": "string"},
+                "account_id": {"type": "string", "description": "Optional Zoho expense account; falls back to default."},
+            },
+            "required": ["entity", "amount"],
+        },
+    },
+    {
+        "name": "send_invoice",
+        "description": "Send an existing Zoho invoice to its customer (email through Zoho).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "invoice_id": {"type": "string"},
+            },
+            "required": ["entity", "invoice_id"],
+        },
+    },
 ]
 
 
@@ -118,6 +249,29 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _switch_entity(ctx, arguments)
     if name == "recall_decisions":
         return _recall_decisions(ctx, arguments)
+    # Phase 8: Gmail
+    if name == "search_emails":
+        return _search_emails(ctx, arguments)
+    if name == "read_email_thread":
+        return _read_email_thread(ctx, arguments)
+    if name == "draft_email":
+        return _draft_email(ctx, arguments)
+    # Phase 8: Drive
+    if name == "list_drive_folder":
+        return _list_drive_folder(ctx, arguments)
+    if name == "read_drive_file":
+        return _read_drive_file(ctx, arguments)
+    # Phase 8: Zoho
+    if name == "create_invoice":
+        return _create_invoice(ctx, arguments)
+    if name == "list_customers":
+        return _list_customers(ctx, arguments)
+    if name == "create_customer":
+        return _create_customer(ctx, arguments)
+    if name == "create_expense":
+        return _create_expense(ctx, arguments)
+    if name == "send_invoice":
+        return _send_invoice(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -241,3 +395,251 @@ def _recall_decisions(ctx, args) -> str:
         ent_part = f" ({r['entity_slug']})" if r["entity_slug"] else ""
         lines.append(f"  {date_part}: {r['fact']}{ent_part}")
     return "\n".join(lines)
+
+
+# =====================================================================
+# Phase 8 — Gmail / Drive / Zoho agent tools
+# =====================================================================
+
+def _gmail_client():
+    from goldman.gmail.client import GoldmanGmailClient
+    return GoldmanGmailClient()
+
+
+def _search_emails(ctx, args) -> str:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "search_emails error: empty query."
+    limit = int(args.get("limit", 10))
+    try:
+        results = _gmail_client().search(query=query, limit=limit)
+    except Exception as e:
+        return f"Gmail unavailable: {e}"
+    if not results:
+        return f"No emails matched {query!r}."
+    lines = [f"Top {len(results)} matches:"]
+    for i, m in enumerate(results, 1):
+        lines.append(
+            f"{i}. [{m['date']}] {m['from']} — {m['subject']}\n"
+            f"   thread_id={m['thread_id']}  preview: {m['snippet'][:140]}"
+        )
+    return "\n".join(lines)
+
+
+def _read_email_thread(ctx, args) -> str:
+    tid = (args.get("thread_id") or "").strip()
+    if not tid:
+        return "read_email_thread error: thread_id required."
+    try:
+        thread = _gmail_client().get_thread(thread_id=tid)
+    except Exception as e:
+        return f"Gmail unavailable: {e}"
+    lines = [f"Thread {tid}:"]
+    for m in thread["messages"]:
+        body = m.get("body_text", "")[:1500]
+        lines.append(
+            f"\n--- {m['date']} | {m['from']} --- subject: {m['subject']}\n{body}"
+        )
+    return "\n".join(lines)
+
+
+def _draft_email(ctx, args) -> str:
+    to = (args.get("to") or "").strip()
+    subject = (args.get("subject") or "").strip()
+    body = args.get("body") or ""
+    if not to or not subject or not body:
+        return "draft_email error: to, subject, body all required."
+    try:
+        result = _gmail_client().create_draft_reply(
+            thread_id=args.get("thread_id") or "",
+            to=to, subject=subject, body=body,
+            in_reply_to_message_id=args.get("in_reply_to_message_id"),
+        )
+    except Exception as e:
+        return f"Gmail unavailable: {e}"
+    return (
+        f"Draft created. Open Gmail → Drafts to review + send.\n"
+        f"  draft_id: {result['draft_id']}\n"
+        f"  message_id: {result.get('message_id')}\n"
+        f"  thread_id: {result.get('thread_id')}"
+    )
+
+
+# --- Drive ---
+
+def _drive_client():
+    import os
+    from goldman.drive.client import GoogleDriveClient
+    return GoogleDriveClient(), os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID", "")
+
+
+def _list_drive_folder(ctx, args) -> str:
+    folder_id = (args.get("folder_id") or "").strip()
+    limit = int(args.get("limit", 50))
+    try:
+        client, root = _drive_client()
+        target = folder_id or root
+        if not target:
+            return "Drive unavailable: no folder_id and no root folder configured."
+        files = client.list_children(parent_id=target, limit=limit)
+    except Exception as e:
+        return f"Drive unavailable: {e}"
+    if not files:
+        return "(empty folder)"
+    lines = [f"{len(files)} item(s):"]
+    for f in files:
+        icon = "📁" if f.get("mimeType") == "application/vnd.google-apps.folder" else "📄"
+        size = f" ({int(f['size']):,}b)" if f.get("size") else ""
+        lines.append(f"  {icon} {f['name']}{size}  id={f['id']}")
+    return "\n".join(lines)
+
+
+def _read_drive_file(ctx, args) -> str:
+    file_id = (args.get("file_id") or "").strip()
+    if not file_id:
+        return "read_drive_file error: file_id required."
+    try:
+        client, _ = _drive_client()
+        meta = client.get_file_metadata(file_id=file_id)
+        mime = meta.get("mimeType", "")
+        if mime == "application/vnd.google-apps.folder":
+            return f"That is a folder, not a file. Use list_drive_folder with folder_id={file_id}."
+        # Text-shaped files: download + decode.
+        TEXTY = ("text/", "application/json", "application/xml")
+        if mime.startswith(TEXTY) or any(mime.startswith(t) for t in TEXTY):
+            data = client.download_file_bytes(file_id=file_id)
+            return f"{meta['name']} ({mime}):\n{data.decode('utf-8', errors='replace')[:4000]}"
+        # Binary — return metadata + view link.
+        return (
+            f"{meta['name']} — {mime}\n"
+            f"Size: {meta.get('size', 'unknown')} bytes\n"
+            f"Modified: {meta.get('modifiedTime', '?')}\n"
+            f"Open: {meta.get('webViewLink', '(no link)')}"
+        )
+    except Exception as e:
+        return f"Drive unavailable: {e}"
+
+
+# --- Zoho Books ---
+
+def _zoho_services_for(ctx, entity_slug: str):
+    """Return (invoice_svc, contact_svc, item_svc, expense_svc) or raise."""
+    from goldman.zoho import (
+        invoice_service_for, contact_service_for,
+        item_service_for, expense_service_for,
+    )
+    repo = EntityRepository(ctx.conn)
+    inv = invoice_service_for(entity_slug, entity_repo=repo)
+    contact = contact_service_for(entity_slug, entity_repo=repo)
+    item = item_service_for(entity_slug, entity_repo=repo)
+    expense = expense_service_for(entity_slug, entity_repo=repo)
+    return inv, contact, item, expense
+
+
+def _create_invoice(ctx, args) -> str:
+    entity = (args.get("entity") or "").lower()
+    if entity not in ("amzg", "seo"):
+        return "create_invoice error: entity must be 'amzg' or 'seo'."
+    customer_id = args.get("customer_id")
+    amount = args.get("amount")
+    if not customer_id or amount is None:
+        return "create_invoice error: customer_id and amount are required."
+    try:
+        inv_svc, _, _, _ = _zoho_services_for(ctx, entity)
+        line_items = [{
+            "rate": float(amount), "quantity": 1,
+            "description": args.get("description") or "",
+        }]
+        if args.get("item_id"):
+            line_items[0]["item_id"] = args["item_id"]
+        invoice = inv_svc.create_invoice(
+            customer_id=customer_id,
+            line_items=line_items,
+            date=args.get("date", ""),
+        )
+        return (
+            f"Created invoice {invoice.invoice_number} for "
+            f"{invoice.customer_name} — total {invoice.total} {invoice.currency_code or ''}."
+        )
+    except Exception as e:
+        return f"Zoho create_invoice failed for {entity}: {e}"
+
+
+def _list_customers(ctx, args) -> str:
+    entity = (args.get("entity") or "").lower()
+    if entity not in ("amzg", "seo"):
+        return "list_customers error: entity must be 'amzg' or 'seo'."
+    limit = int(args.get("limit", 50))
+    try:
+        _, contact_svc, _, _ = _zoho_services_for(ctx, entity)
+        contacts = contact_svc.list_contacts(per_page=min(limit, 200))
+    except Exception as e:
+        return f"Zoho list_customers failed for {entity}: {e}"
+    if not contacts:
+        return f"No customers found for {entity}."
+    lines = [f"{len(contacts)} customer(s) for {entity}:"]
+    for c in contacts[:limit]:
+        lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
+    return "\n".join(lines)
+
+
+def _create_customer(ctx, args) -> str:
+    entity = (args.get("entity") or "").lower()
+    if entity not in ("amzg", "seo"):
+        return "create_customer error: entity must be 'amzg' or 'seo'."
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "create_customer error: name is required."
+    try:
+        _, contact_svc, _, _ = _zoho_services_for(ctx, entity)
+        contact = contact_svc.create_contact(
+            contact_name=name,
+            company_name=args.get("company", ""),
+            email=args.get("email", ""),
+            phone=args.get("phone", ""),
+        )
+        return f"Created customer {contact.contact_id} — {contact.contact_name} ({contact.email})."
+    except Exception as e:
+        return f"Zoho create_customer failed for {entity}: {e}"
+
+
+def _create_expense(ctx, args) -> str:
+    entity = (args.get("entity") or "").lower()
+    if entity not in ("amzg", "seo"):
+        return "create_expense error: entity must be 'amzg' or 'seo'."
+    amount = args.get("amount")
+    if amount is None:
+        return "create_expense error: amount is required."
+    try:
+        _, _, _, expense_svc = _zoho_services_for(ctx, entity)
+        if not expense_svc:
+            return "create_expense not yet supported in this build."
+        result = expense_svc.create_expense(
+            amount=float(amount),
+            date=args.get("date", ""),
+            description=args.get("description", ""),
+            vendor_id=args.get("vendor_id", ""),
+            account_id=args.get("account_id", ""),
+            currency_code=args.get("currency", "USD"),
+        )
+        return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')})."
+    except Exception as e:
+        return f"Zoho create_expense failed for {entity}: {e}"
+
+
+def _send_invoice(ctx, args) -> str:
+    entity = (args.get("entity") or "").lower()
+    if entity not in ("amzg", "seo"):
+        return "send_invoice error: entity must be 'amzg' or 'seo'."
+    invoice_id = (args.get("invoice_id") or "").strip()
+    if not invoice_id:
+        return "send_invoice error: invoice_id is required."
+    try:
+        inv_svc, _, _, _ = _zoho_services_for(ctx, entity)
+        ok = inv_svc.send_invoice(invoice_id)
+        return (
+            f"Sent invoice {invoice_id} ✓" if ok
+            else f"Zoho rejected the send request for invoice {invoice_id}."
+        )
+    except Exception as e:
+        return f"Zoho send_invoice failed for {entity}: {e}"

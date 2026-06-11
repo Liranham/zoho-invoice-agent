@@ -81,3 +81,49 @@ class GoogleDriveClient:
             fields="id, webViewLink",
         ).execute()
         return {"file_id": resp["id"], "url": resp.get("webViewLink", "")}
+
+    # --- Read / list operations (added Phase 8) ---
+    def list_children(self, *, parent_id: str, limit: int = 100) -> list:
+        """List files + folders directly under parent_id (one level)."""
+        q = f"'{parent_id}' in parents and trashed = false"
+        resp = self._service.files().list(
+            q=q, pageSize=min(limit, 1000),
+            fields="files(id, name, mimeType, size, modifiedTime, webViewLink)",
+            orderBy="name",
+        ).execute()
+        return resp.get("files", [])
+
+    def get_file_metadata(self, *, file_id: str) -> dict:
+        """Return name + mimeType + webViewLink + size + parents."""
+        return self._service.files().get(
+            fileId=file_id,
+            fields="id, name, mimeType, size, modifiedTime, webViewLink, parents",
+        ).execute()
+
+    def download_file_bytes(self, *, file_id: str) -> bytes:
+        """Stream the file's binary content."""
+        from googleapiclient.http import MediaIoBaseDownload
+        request = self._service.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    def search_files(self, *, name_contains: str = "",
+                     parent_id: str = "", limit: int = 25) -> list:
+        """Find files by partial name match. Scoped under parent_id when given."""
+        clauses = ["trashed = false"]
+        if name_contains:
+            safe = name_contains.replace("'", "\\'")
+            clauses.append(f"name contains '{safe}'")
+        if parent_id:
+            clauses.append(f"'{parent_id}' in parents")
+        q = " and ".join(clauses)
+        resp = self._service.files().list(
+            q=q, pageSize=min(limit, 1000),
+            fields="files(id, name, mimeType, size, modifiedTime, webViewLink)",
+            orderBy="modifiedTime desc",
+        ).execute()
+        return resp.get("files", [])
