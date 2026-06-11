@@ -147,10 +147,22 @@ TOOL_SCHEMAS = [
             "required": ["file_id"],
         },
     },
-    # ---- Phase 8: Zoho Books ----
+    # ---- Phase 8/9: Zoho Books (per-entity, guardrailed) ----
+    # HARD MAPPING — applied to every Zoho tool below:
+    #   amzg = AMZ-Expert Global Limited (HK)     — Zoho org 876247837
+    #   seo  = Pacific Edge Outsourcing LLC (US)  — Zoho org 914942331
+    # Never confuse these. If a request doesn't unambiguously name the
+    # company, REFUSE and ask which one. All writes require confirmed:true.
     {
         "name": "create_invoice",
-        "description": "Create a new invoice in Zoho Books for the given entity. customer_id + line_items required. Returns the new invoice number.",
+        "description": (
+            "Create a new invoice in Zoho Books. "
+            "HARD MAPPING: amzg=AMZ-Expert Global Limited (HK, org 876247837), "
+            "seo=Pacific Edge Outsourcing LLC (US Wyoming, org 914942331). "
+            "WRITE OPERATION — first call returns a confirmation prompt; "
+            "call again with confirmed:true to actually execute. NEVER pass "
+            "confirmed:true on the first attempt; require explicit user 'yes'."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -159,14 +171,20 @@ TOOL_SCHEMAS = [
                 "amount": {"type": "number"},
                 "description": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
-                "item_id": {"type": "string", "description": "Optional Zoho item ID."},
+                "item_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False,
+                              "description": "Only set true AFTER showing the confirmation prompt to the user and getting their explicit 'yes'."},
             },
             "required": ["entity", "customer_id", "amount"],
         },
     },
     {
         "name": "list_customers",
-        "description": "List Zoho Books customers/contacts for the given entity.",
+        "description": (
+            "List Zoho Books customers. HARD MAPPING: amzg=AMZ-Expert Global "
+            "Limited (HK), seo=Pacific Edge Outsourcing LLC (US). Read-only; "
+            "no confirmation needed. Result is stamped with [ENTITY:…]."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -178,7 +196,11 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "create_customer",
-        "description": "Add a new customer contact to Zoho Books for the given entity.",
+        "description": (
+            "Add a new customer in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
+            "Global (HK), seo=Pacific Edge (US). WRITE OPERATION — first call "
+            "returns a confirmation prompt; call again with confirmed:true."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -187,35 +209,47 @@ TOOL_SCHEMAS = [
                 "company": {"type": "string"},
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "name"],
         },
     },
     {
         "name": "create_expense",
-        "description": "Record a bill/expense in Zoho Books for the given entity. Use when the user forwards a receipt or bill that should land in Zoho.",
+        "description": (
+            "Record a bill/expense in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
+            "Global (HK), seo=Pacific Edge (US). WRITE OPERATION — first call "
+            "returns a confirmation prompt; call again with confirmed:true."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "enum": ["amzg", "seo"]},
                 "amount": {"type": "number"},
                 "currency": {"type": "string", "default": "USD"},
-                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
-                "vendor_id": {"type": "string", "description": "Optional Zoho vendor contact id."},
+                "date": {"type": "string"},
+                "vendor_id": {"type": "string"},
                 "description": {"type": "string"},
-                "account_id": {"type": "string", "description": "Optional Zoho expense account; falls back to default."},
+                "account_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "amount"],
         },
     },
     {
         "name": "send_invoice",
-        "description": "Send an existing Zoho invoice to its customer (email through Zoho).",
+        "description": (
+            "Email an existing Zoho invoice to its customer. IRREVERSIBLE — "
+            "customer receives the email. HARD MAPPING: amzg=AMZ-Expert "
+            "Global (HK), seo=Pacific Edge (US). WRITE OPERATION — first "
+            "call returns a confirmation prompt; call again with confirmed:true."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "enum": ["amzg", "seo"]},
                 "invoice_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "invoice_id"],
         },
@@ -333,25 +367,29 @@ def _remember_fact(ctx, args) -> str:
 
 
 def _list_invoices(ctx, args) -> str:
-    if not ctx.entity_slug:
-        return "Tell me which entity (amzg or seo) before listing invoices."
-    from goldman.zoho import invoice_service_for
+    # Phase 9: route through the guardrail so entity is banner-stamped + audited.
+    # Take entity from explicit arg first, fall back to session.
+    if "entity" not in args and ctx.entity_slug:
+        args = {**args, "entity": ctx.entity_slug}
 
-    svc = invoice_service_for(
-        ctx.entity_slug, entity_repo=EntityRepository(ctx.conn),
-    )
-    status = args.get("status", "")
-    invoices = svc.list_invoices(status=status)
-    invoices = invoices[: int(args.get("limit", 10))]
-    if not invoices:
-        return "No invoices found."
-    lines = []
-    for inv in invoices:
-        lines.append(
-            f"{inv.invoice_number} | {inv.status} | {inv.date} | "
-            f"{inv.total:.2f} {inv.currency_code} | {inv.customer_name}"
+    def work(info):
+        from goldman.zoho import invoice_service_for
+        svc = invoice_service_for(
+            info.slug, entity_repo=EntityRepository(ctx.conn),
         )
-    return "\n".join(lines)
+        status = args.get("status", "")
+        invoices = svc.list_invoices(status=status)
+        invoices = invoices[: int(args.get("limit", 10))]
+        if not invoices:
+            return "No invoices found."
+        lines = []
+        for inv in invoices:
+            lines.append(
+                f"{inv.invoice_number} | {inv.status} | {inv.date} | "
+                f"{inv.total:.2f} {inv.currency_code} | {inv.customer_name}"
+            )
+        return "\n".join(lines)
+    return _zoho_guardrail("list_invoices", ctx, args, work)
 
 
 def _list_pending(ctx) -> str:
@@ -536,16 +574,70 @@ def _zoho_services_for(ctx, entity_slug: str):
     return inv, contact, item, expense
 
 
+def _zoho_guardrail(tool_name: str, ctx, args: dict, work):
+    """Wrap a Zoho tool with the Phase 9 safety guardrail.
+
+    1. Resolve the entity (refuses if slug missing / unknown / no Zoho).
+    2. Block writes that aren't confirmed.
+    3. Run the underlying work.
+    4. Prefix with the entity banner.
+    5. Audit log every call (executed or blocked).
+    """
+    from goldman.zoho_safety import (
+        resolve_entity, banner, needs_confirmation,
+        confirmation_prompt, log_audit, log_blocked_no_entity,
+        UnknownEntityError,
+    )
+    channel_id = getattr(ctx, "chat_id", "") or ""
+    try:
+        info = resolve_entity(ctx.conn, args.get("entity") or "")
+    except UnknownEntityError as e:
+        log_blocked_no_entity(
+            ctx.conn, tool_name=tool_name, arguments=args,
+            reason=str(e), channel_id=channel_id,
+        )
+        return (
+            f"⚠️  Zoho call refused — {e}.\n"
+            f"Specify exactly which company: 'amzg' = AMZ-Expert Global "
+            f"Limited (HK), 'seo' = Pacific Edge Outsourcing LLC (US, WY)."
+        )
+
+    if needs_confirmation(tool_name, args):
+        prompt = confirmation_prompt(info, tool_name, args)
+        log_audit(
+            ctx.conn, info=info, tool_name=tool_name, arguments=args,
+            status="blocked_unconfirmed",
+            result_summary="awaiting confirmation",
+            channel_id=channel_id,
+        )
+        return prompt
+
+    try:
+        body = work(info)
+        log_audit(
+            ctx.conn, info=info, tool_name=tool_name, arguments=args,
+            status="executed", result_summary=body[:500],
+            channel_id=channel_id,
+        )
+        return f"{banner(info)}\n{body}"
+    except Exception as e:
+        msg = f"Zoho {tool_name} failed: {e}"
+        log_audit(
+            ctx.conn, info=info, tool_name=tool_name, arguments=args,
+            status="error", result_summary=str(e)[:500],
+            channel_id=channel_id,
+        )
+        return f"{banner(info)}\n{msg}"
+
+
 def _create_invoice(ctx, args) -> str:
-    entity = (args.get("entity") or "").lower()
-    if entity not in ("amzg", "seo"):
-        return "create_invoice error: entity must be 'amzg' or 'seo'."
     customer_id = args.get("customer_id")
     amount = args.get("amount")
     if not customer_id or amount is None:
         return "create_invoice error: customer_id and amount are required."
-    try:
-        inv_svc, _, _, _ = _zoho_services_for(ctx, entity)
+
+    def work(info):
+        inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
         line_items = [{
             "rate": float(amount), "quantity": 1,
             "description": args.get("description") or "",
@@ -561,37 +653,31 @@ def _create_invoice(ctx, args) -> str:
             f"Created invoice {invoice.invoice_number} for "
             f"{invoice.customer_name} — total {invoice.total} {invoice.currency_code or ''}."
         )
-    except Exception as e:
-        return f"Zoho create_invoice failed for {entity}: {e}"
+    return _zoho_guardrail("create_invoice", ctx, args, work)
 
 
 def _list_customers(ctx, args) -> str:
-    entity = (args.get("entity") or "").lower()
-    if entity not in ("amzg", "seo"):
-        return "list_customers error: entity must be 'amzg' or 'seo'."
     limit = int(args.get("limit", 50))
-    try:
-        _, contact_svc, _, _ = _zoho_services_for(ctx, entity)
+
+    def work(info):
+        _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
         contacts = contact_svc.list_contacts(per_page=min(limit, 200))
-    except Exception as e:
-        return f"Zoho list_customers failed for {entity}: {e}"
-    if not contacts:
-        return f"No customers found for {entity}."
-    lines = [f"{len(contacts)} customer(s) for {entity}:"]
-    for c in contacts[:limit]:
-        lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
-    return "\n".join(lines)
+        if not contacts:
+            return f"No customers found."
+        lines = [f"{len(contacts)} customer(s):"]
+        for c in contacts[:limit]:
+            lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
+        return "\n".join(lines)
+    return _zoho_guardrail("list_customers", ctx, args, work)
 
 
 def _create_customer(ctx, args) -> str:
-    entity = (args.get("entity") or "").lower()
-    if entity not in ("amzg", "seo"):
-        return "create_customer error: entity must be 'amzg' or 'seo'."
     name = (args.get("name") or "").strip()
     if not name:
         return "create_customer error: name is required."
-    try:
-        _, contact_svc, _, _ = _zoho_services_for(ctx, entity)
+
+    def work(info):
+        _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
         contact = contact_svc.create_contact(
             contact_name=name,
             company_name=args.get("company", ""),
@@ -599,19 +685,16 @@ def _create_customer(ctx, args) -> str:
             phone=args.get("phone", ""),
         )
         return f"Created customer {contact.contact_id} — {contact.contact_name} ({contact.email})."
-    except Exception as e:
-        return f"Zoho create_customer failed for {entity}: {e}"
+    return _zoho_guardrail("create_customer", ctx, args, work)
 
 
 def _create_expense(ctx, args) -> str:
-    entity = (args.get("entity") or "").lower()
-    if entity not in ("amzg", "seo"):
-        return "create_expense error: entity must be 'amzg' or 'seo'."
     amount = args.get("amount")
     if amount is None:
         return "create_expense error: amount is required."
-    try:
-        _, _, _, expense_svc = _zoho_services_for(ctx, entity)
+
+    def work(info):
+        _, _, _, expense_svc = _zoho_services_for(ctx, info.slug)
         if not expense_svc:
             return "create_expense not yet supported in this build."
         result = expense_svc.create_expense(
@@ -623,23 +706,19 @@ def _create_expense(ctx, args) -> str:
             currency_code=args.get("currency", "USD"),
         )
         return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')})."
-    except Exception as e:
-        return f"Zoho create_expense failed for {entity}: {e}"
+    return _zoho_guardrail("create_expense", ctx, args, work)
 
 
 def _send_invoice(ctx, args) -> str:
-    entity = (args.get("entity") or "").lower()
-    if entity not in ("amzg", "seo"):
-        return "send_invoice error: entity must be 'amzg' or 'seo'."
     invoice_id = (args.get("invoice_id") or "").strip()
     if not invoice_id:
         return "send_invoice error: invoice_id is required."
-    try:
-        inv_svc, _, _, _ = _zoho_services_for(ctx, entity)
+
+    def work(info):
+        inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
         ok = inv_svc.send_invoice(invoice_id)
         return (
             f"Sent invoice {invoice_id} ✓" if ok
             else f"Zoho rejected the send request for invoice {invoice_id}."
         )
-    except Exception as e:
-        return f"Zoho send_invoice failed for {entity}: {e}"
+    return _zoho_guardrail("send_invoice", ctx, args, work)

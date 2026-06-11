@@ -239,7 +239,13 @@ TOOLS = [
     # ---- Phase 8: Zoho Books tools (per-entity) ----
     {
         "name": "create_invoice",
-        "description": "Create a Zoho Books invoice for amzg or seo. customer_id + amount required.",
+        "description": (
+            "Create a Zoho Books invoice. HARD MAPPING: amzg=AMZ-Expert Global "
+            "Limited (HK, org 876247837), seo=Pacific Edge Outsourcing LLC "
+            "(US Wyoming, org 914942331). NEVER confuse them. WRITE — first "
+            "call returns a confirmation prompt; only call again with "
+            "confirmed:true after the user says yes."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -249,6 +255,7 @@ TOOLS = [
                 "description": {"type": "string"},
                 "date": {"type": "string"},
                 "item_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "customer_id", "amount"],
         },
@@ -267,7 +274,11 @@ TOOLS = [
     },
     {
         "name": "create_customer",
-        "description": "Add a new Zoho Books customer for the given entity.",
+        "description": (
+            "Add a new Zoho Books customer. HARD MAPPING: amzg=AMZ-Expert "
+            "Global (HK), seo=Pacific Edge (US). WRITE — first call returns "
+            "a confirmation prompt; call again with confirmed:true."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -276,13 +287,18 @@ TOOLS = [
                 "company": {"type": "string"},
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "name"],
         },
     },
     {
         "name": "create_expense",
-        "description": "Record an expense/bill in Zoho Books for the given entity.",
+        "description": (
+            "Record an expense/bill in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
+            "Global (HK), seo=Pacific Edge (US). WRITE — first call returns "
+            "a confirmation prompt; call again with confirmed:true."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -293,18 +309,25 @@ TOOLS = [
                 "vendor_id": {"type": "string"},
                 "description": {"type": "string"},
                 "account_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "amount"],
         },
     },
     {
         "name": "send_invoice",
-        "description": "Email a Zoho Books invoice to its customer.",
+        "description": (
+            "Email a Zoho Books invoice to its customer. IRREVERSIBLE. HARD "
+            "MAPPING: amzg=AMZ-Expert Global (HK), seo=Pacific Edge (US). "
+            "WRITE — first call returns a confirmation prompt; call again "
+            "with confirmed:true."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "enum": ["amzg", "seo"]},
                 "invoice_id": {"type": "string"},
+                "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "invoice_id"],
         },
