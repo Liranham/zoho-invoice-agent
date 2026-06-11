@@ -254,6 +254,28 @@ TOOL_SCHEMAS = [
             "required": ["entity", "invoice_id"],
         },
     },
+    {
+        "name": "zoho_audit_trail",
+        "description": (
+            "Show Goldman's Zoho audit log — every Zoho call (executed and "
+            "blocked) in reverse chronological order. Use whenever the user "
+            "asks 'what did you do in Zoho', 'show me the audit trail', "
+            "'have you touched the wrong company', or any question about "
+            "Goldman's Zoho activity history. Read-only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo", "all"],
+                            "default": "all"},
+                "status": {"type": "string",
+                            "enum": ["all", "executed", "blocked_unconfirmed",
+                                     "blocked_ambiguous", "blocked_no_creds", "error"],
+                            "default": "all"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    },
 ]
 
 
@@ -306,6 +328,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _create_expense(ctx, arguments)
     if name == "send_invoice":
         return _send_invoice(ctx, arguments)
+    if name == "zoho_audit_trail":
+        return _zoho_audit_trail(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -722,3 +746,49 @@ def _send_invoice(ctx, args) -> str:
             else f"Zoho rejected the send request for invoice {invoice_id}."
         )
     return _zoho_guardrail("send_invoice", ctx, args, work)
+
+
+def _zoho_audit_trail(ctx, args) -> str:
+    entity = (args.get("entity") or "all").lower()
+    status = (args.get("status") or "all").lower()
+    limit = max(1, min(int(args.get("limit", 20)), 200))
+
+    clauses = []
+    params = []
+    if entity not in ("all", ""):
+        clauses.append("entity_slug = %s")
+        params.append(entity)
+    if status not in ("all", ""):
+        clauses.append("status = %s")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    with ctx.conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT created_at, entity_legal_name, zoho_organization_id,
+                   tool_name, status, result_summary, channel_id
+            FROM goldman.zoho_audit
+            {where}
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (*params, limit),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        return "No Zoho audit entries match those filters."
+
+    icon = {
+        "executed": "✓", "blocked_unconfirmed": "⏸️",
+        "blocked_ambiguous": "⚠️", "blocked_no_creds": "🔒", "error": "✗",
+    }
+    lines = [f"Last {len(rows)} Zoho action(s):"]
+    for created, legal, org, tool, st, summary, channel in rows:
+        ts = created.strftime("%Y-%m-%d %H:%M") if created else "?"
+        lines.append(
+            f"  {icon.get(st, '·')} {ts} | {legal[:24]:24} | org {org} | "
+            f"{tool:18} | {st:22} | {(summary or '')[:60]}"
+        )
+    return "\n".join(lines)

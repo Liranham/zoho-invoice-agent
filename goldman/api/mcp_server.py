@@ -332,6 +332,27 @@ TOOLS = [
             "required": ["entity", "invoice_id"],
         },
     },
+    {
+        "name": "zoho_audit_trail",
+        "description": (
+            "Show Goldman's Zoho audit log — every Zoho call (executed and "
+            "blocked) in reverse chronological order. Read-only. Use for "
+            "'what did Goldman do in Zoho', 'audit trail', 'show me Goldman's "
+            "Zoho activity'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo", "all"],
+                            "default": "all"},
+                "status": {"type": "string",
+                            "enum": ["all", "executed", "blocked_unconfirmed",
+                                     "blocked_ambiguous", "blocked_no_creds", "error"],
+                            "default": "all"},
+                "limit": {"type": "integer", "default": 20},
+            },
+        },
+    },
 ]
 
 
@@ -471,12 +492,12 @@ def _run_tool(name: str, arguments: dict) -> str:
             )
         return f"Recorded fact (id={new_id}, kind={kind}, entity={entity})."
 
-    # Phase 8: route via the bot's execute_tool so MCP + Telegram share dispatch.
+    # Phase 8/9: route via the bot's execute_tool so MCP + Telegram share dispatch.
     AGENT_TOOLS = {
         "search_emails", "read_email_thread", "draft_email",
         "list_drive_folder", "read_drive_file",
         "create_invoice", "list_customers", "create_customer",
-        "create_expense", "send_invoice",
+        "create_expense", "send_invoice", "zoho_audit_trail",
     }
     if name in AGENT_TOOLS:
         from goldman.bot.tools import ToolContext, execute_tool
