@@ -37,11 +37,7 @@ class HubstaffConfigError(RuntimeError):
 
 
 def _load_persisted_pat() -> Optional[str]:
-    """Read the latest rolling refresh token from goldman.hubstaff_tokens.
-
-    Failures (missing table, DB unavailable, etc.) fall back silently so
-    the client keeps working from the env-var seed during early setup.
-    """
+    """Read the latest rolling refresh token from goldman.hubstaff_tokens."""
     try:
         from goldman_db.connection import app_conn
         with app_conn() as conn:
@@ -55,27 +51,74 @@ def _load_persisted_pat() -> Optional[str]:
         return None
 
 
-def _persist_pat(new_pat: str) -> None:
-    """Write the rotated refresh token back so future processes pick it up."""
+def _load_cached_access_token() -> tuple:
+    """Read (access_token, expires_at_epoch) from the shared row.
+
+    Returns (None, 0.0) if no row, no cached token, or it's already
+    near expiry. We treat anything with <60s remaining as expired so
+    no concurrent caller burns the rotation race.
+    """
+    import time as _time
     try:
         from goldman_db.connection import app_conn
         with app_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """
-                    INSERT INTO goldman.hubstaff_tokens (id, refresh_token)
-                    VALUES (1, %s)
-                    ON CONFLICT (id) DO UPDATE
-                       SET refresh_token = EXCLUDED.refresh_token,
-                           updated_at = now()
-                    """,
-                    (new_pat,),
+                    "SELECT access_token, "
+                    "  EXTRACT(EPOCH FROM access_token_expires_at) "
+                    "FROM goldman.hubstaff_tokens WHERE id=1"
                 )
+                row = cur.fetchone()
+        if not row or not row[0] or not row[1]:
+            return None, 0.0
+        exp = float(row[1])
+        if exp - _time.time() < 60:
+            return None, 0.0
+        return row[0], exp
+    except Exception:
+        return None, 0.0
+
+
+def _persist_rotation(new_pat: Optional[str],
+                      new_access_token: Optional[str],
+                      access_token_expires_at_epoch: Optional[float]) -> None:
+    """Write the rotated refresh token + cached access token + expiry."""
+    try:
+        from datetime import datetime, timezone
+        exp_dt = (datetime.fromtimestamp(access_token_expires_at_epoch, tz=timezone.utc)
+                   if access_token_expires_at_epoch else None)
+        from goldman_db.connection import app_conn
+        with app_conn() as conn:
+            with conn.cursor() as cur:
+                if new_pat:
+                    cur.execute(
+                        """
+                        INSERT INTO goldman.hubstaff_tokens
+                          (id, refresh_token, access_token, access_token_expires_at)
+                        VALUES (1, %s, %s, %s)
+                        ON CONFLICT (id) DO UPDATE
+                           SET refresh_token = EXCLUDED.refresh_token,
+                               access_token = EXCLUDED.access_token,
+                               access_token_expires_at = EXCLUDED.access_token_expires_at,
+                               updated_at = now()
+                        """,
+                        (new_pat, new_access_token, exp_dt),
+                    )
+                else:
+                    # Only the access token changed (rare).
+                    cur.execute(
+                        """
+                        UPDATE goldman.hubstaff_tokens
+                        SET access_token = %s,
+                            access_token_expires_at = %s,
+                            updated_at = now()
+                        WHERE id = 1
+                        """,
+                        (new_access_token, exp_dt),
+                    )
                 conn.commit()
     except Exception:
-        # Persistence failure is non-fatal — the in-memory PAT still works
-        # for the lifetime of this process. The next process will fall back
-        # to the env-var seed, which is the same situation we already had.
+        # Persistence failure is non-fatal — in-memory token still works.
         pass
 
 
@@ -98,29 +141,61 @@ class HubstaffClient:
     # ---- auth -----------------------------------------------------------
 
     def _refresh_access_token(self) -> str:
-        resp = requests.post(
-            TOKEN_URL,
-            data={"grant_type": "refresh_token", "refresh_token": self.pat},
-            timeout=15,
-        )
-        resp.raise_for_status()
+        # Race-condition protection: another process may have refreshed
+        # the PAT seconds ago and updated the DB row. Re-read the latest
+        # PAT before exchanging to avoid submitting a stale (already
+        # rotated) refresh token.
+        latest_db_pat = _load_persisted_pat()
+        if latest_db_pat and latest_db_pat != self.pat:
+            self.pat = latest_db_pat
+        try:
+            resp = requests.post(
+                TOKEN_URL,
+                data={"grant_type": "refresh_token", "refresh_token": self.pat},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.HTTPError:
+            # If the exchange failed (e.g. another process raced and won),
+            # re-read the DB one more time and retry. If still failing,
+            # surface the original error.
+            latest_db_pat = _load_persisted_pat()
+            if latest_db_pat and latest_db_pat != self.pat:
+                self.pat = latest_db_pat
+                resp = requests.post(
+                    TOKEN_URL,
+                    data={"grant_type": "refresh_token",
+                           "refresh_token": self.pat},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            else:
+                raise
         payload = resp.json()
         self._access_token = payload["access_token"]
-        # Use 90% of the lifetime as safety margin.
         ttl = int(payload.get("expires_in", 86400)) * 0.9
         self._access_token_expires_at = time.time() + ttl
-        # Hubstaff rotates the refresh token on every exchange. Persist
-        # the new one immediately so a process restart doesn't fall back
-        # to the now-invalid env-var seed.
-        new_pat = payload.get("refresh_token")
-        if new_pat and new_pat != self.pat:
+        new_pat = payload.get("refresh_token") or self.pat
+        if new_pat != self.pat:
             self.pat = new_pat
-            _persist_pat(new_pat)
+        # Persist both rolled PAT and the new access_token so other processes
+        # can share it instead of triggering their own rotation.
+        _persist_rotation(self.pat, self._access_token,
+                          self._access_token_expires_at)
         return self._access_token
 
     def _bearer(self) -> str:
-        if not self._access_token or time.time() >= self._access_token_expires_at:
-            self._refresh_access_token()
+        # First chance: in-process cached access token still valid.
+        if self._access_token and time.time() < self._access_token_expires_at:
+            return f"Bearer {self._access_token}"
+        # Second chance: shared DB cache from a sibling process.
+        cached, exp = _load_cached_access_token()
+        if cached:
+            self._access_token = cached
+            self._access_token_expires_at = exp
+            return f"Bearer {self._access_token}"
+        # Fall through to a fresh refresh (and persist for siblings).
+        self._refresh_access_token()
         return f"Bearer {self._access_token}"
 
     # ---- low-level fetch ------------------------------------------------
