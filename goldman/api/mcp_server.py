@@ -353,6 +353,88 @@ TOOLS = [
             },
         },
     },
+    # ---- Phase 10: Hubstaff (Pacific Edge contractor payroll) ----
+    {
+        "name": "list_team_members",
+        "description": (
+            "List Pacific Edge contractors from Hubstaff with their pay "
+            "rate (if known). Read-only. Use for 'who's on the team', "
+            "'list contractors', 'who tracks time for Pacific Edge'."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "hours_worked",
+        "description": (
+            "Hubstaff tracked + billable hours per contractor for a date "
+            "range. Read-only. YYYY-MM-DD inclusive."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string"},
+                "stop":  {"type": "string"},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "set_member_rate",
+        "description": (
+            "Save a contractor's pay rate in Goldman's memory (Hubstaff "
+            "doesn't expose rates over the API). Use whenever the user "
+            "says 'Raquel's rate is $7.50/hour' or similar."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hubstaff_user_id": {"type": "integer"},
+                "full_name":        {"type": "string"},
+                "rate_amount":      {"type": "number"},
+                "rate_currency":    {"type": "string", "default": "USD"},
+                "rate_unit": {"type": "string",
+                              "enum": ["hour", "day", "week", "month"],
+                              "default": "hour"},
+                "notes": {"type": "string"},
+            },
+            "required": ["hubstaff_user_id", "full_name", "rate_amount"],
+        },
+    },
+    {
+        "name": "payroll_summary",
+        "description": (
+            "Compute Pacific Edge payroll for a date range: hours × per-"
+            "member rate. Flags contractors with no rate on file. Use for "
+            "'this week's payroll', 'how much do I owe the team', "
+            "'draft the Wise list'. Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string"},
+                "stop":  {"type": "string"},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "payroll_anomalies",
+        "description": (
+            "Compare current-period hours per contractor against a recent "
+            "baseline; flag ±threshold% deltas. Use for 'anything unusual', "
+            "'who worked way more than normal'. Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string"},
+                "stop":  {"type": "string"},
+                "baseline_weeks": {"type": "integer", "default": 4},
+                "threshold_pct":  {"type": "number", "default": 25.0},
+            },
+            "required": ["start", "stop"],
+        },
+    },
 ]
 
 
@@ -492,12 +574,14 @@ def _run_tool(name: str, arguments: dict) -> str:
             )
         return f"Recorded fact (id={new_id}, kind={kind}, entity={entity})."
 
-    # Phase 8/9: route via the bot's execute_tool so MCP + Telegram share dispatch.
+    # Phase 8/9/10: route via the bot's execute_tool so MCP + Telegram share dispatch.
     AGENT_TOOLS = {
         "search_emails", "read_email_thread", "draft_email",
         "list_drive_folder", "read_drive_file",
         "create_invoice", "list_customers", "create_customer",
         "create_expense", "send_invoice", "zoho_audit_trail",
+        "list_team_members", "hours_worked", "set_member_rate",
+        "payroll_summary", "payroll_anomalies",
     }
     if name in AGENT_TOOLS:
         from goldman.bot.tools import ToolContext, execute_tool

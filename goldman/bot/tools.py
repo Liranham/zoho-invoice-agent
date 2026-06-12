@@ -276,6 +276,102 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    # ---- Phase 10: Hubstaff (Pacific Edge contractor payroll) ----
+    # Hubstaff API doesn't expose per-member pay rates on the standard
+    # read scope, so Goldman keeps them in goldman.hubstaff_member_rates.
+    # Liran says 'Set Raquel Uy's rate to $7.50/hour' → set_member_rate
+    # writes a row. Then payroll_summary reads the rates + tracked hours
+    # to compute the period's payout.
+    {
+        "name": "list_team_members",
+        "description": (
+            "List Pacific Edge contractors from Hubstaff. Returns each "
+            "member's Hubstaff user ID, name, role, status, and the rate "
+            "Goldman has on file (if any). Use when the user asks 'who's on "
+            "the team', 'what contractors do I have', 'who's tracking time'."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "hours_worked",
+        "description": (
+            "Tracked hours per contractor for a date range. Returns a table "
+            "of {user, total_hours, billable_hours}. Use when the user asks "
+            "'how many hours did the team work this week / last month / in "
+            "May 2026', 'who worked the most / least', or any time-tracking "
+            "question. Date format: YYYY-MM-DD, inclusive."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "YYYY-MM-DD"},
+                "stop":  {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "set_member_rate",
+        "description": (
+            "Save a contractor's pay rate to Goldman's memory so payroll "
+            "can be computed. Hubstaff doesn't expose rates over the API, "
+            "so this is how Liran tells Goldman 'Raquel's rate is $7.50/h'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hubstaff_user_id": {"type": "integer"},
+                "full_name": {"type": "string"},
+                "rate_amount": {"type": "number"},
+                "rate_currency": {"type": "string", "default": "USD"},
+                "rate_unit": {"type": "string",
+                              "enum": ["hour", "day", "week", "month"],
+                              "default": "hour"},
+                "notes": {"type": "string"},
+            },
+            "required": ["hubstaff_user_id", "full_name", "rate_amount"],
+        },
+    },
+    {
+        "name": "payroll_summary",
+        "description": (
+            "Compute payroll for a date range: hours × per-member rate per "
+            "contractor + grand total. Surfaces contractors who don't have "
+            "a rate on file (need set_member_rate first). Use for 'what's "
+            "this week's payroll', 'how much do I owe the team for May', "
+            "'draft the Wise payment list'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "YYYY-MM-DD"},
+                "stop":  {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "payroll_anomalies",
+        "description": (
+            "Compare a contractor's hours for the current period against "
+            "their recent baseline. Flags people significantly above or "
+            "below their average (potential overtime, illness, or under-"
+            "reporting). Use for 'anything unusual this week', 'who worked "
+            "way more than normal', proactive payroll review."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "YYYY-MM-DD"},
+                "stop":  {"type": "string", "description": "YYYY-MM-DD"},
+                "baseline_weeks": {"type": "integer", "default": 4,
+                                   "description": "How many recent weeks form the baseline (default 4)."},
+                "threshold_pct":  {"type": "number", "default": 25.0,
+                                   "description": "Flag deltas above this % off baseline."},
+            },
+            "required": ["start", "stop"],
+        },
+    },
 ]
 
 
@@ -330,6 +426,17 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _send_invoice(ctx, arguments)
     if name == "zoho_audit_trail":
         return _zoho_audit_trail(ctx, arguments)
+    # Phase 10: Hubstaff
+    if name == "list_team_members":
+        return _hubstaff_list_members(ctx, arguments)
+    if name == "hours_worked":
+        return _hubstaff_hours_worked(ctx, arguments)
+    if name == "set_member_rate":
+        return _hubstaff_set_rate(ctx, arguments)
+    if name == "payroll_summary":
+        return _hubstaff_payroll_summary(ctx, arguments)
+    if name == "payroll_anomalies":
+        return _hubstaff_payroll_anomalies(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -791,4 +898,270 @@ def _zoho_audit_trail(ctx, args) -> str:
             f"  {icon.get(st, '·')} {ts} | {legal[:24]:24} | org {org} | "
             f"{tool:18} | {st:22} | {(summary or '')[:60]}"
         )
+    return "\n".join(lines)
+
+
+# =====================================================================
+# Phase 10 — Hubstaff tools
+# =====================================================================
+
+def _seo_entity_id(ctx):
+    """Pacific Edge is the only entity with Hubstaff today. Cached lookup."""
+    with ctx.conn.cursor() as cur:
+        cur.execute("SELECT id FROM goldman.entities WHERE slug='seo'")
+        row = cur.fetchone()
+        if not row:
+            raise RuntimeError("Pacific Edge (seo) entity missing from goldman.entities")
+        return row[0]
+
+
+def _hs_log(ctx, *, tool_name: str, args: dict, status: str,
+            result_summary: str = "") -> None:
+    import json
+    try:
+        with ctx.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO goldman.hubstaff_audit
+                  (entity_slug, org_id, tool_name, arguments, status,
+                   result_summary, channel_id)
+                VALUES ('seo', %s, %s, %s::jsonb, %s, %s, %s)
+                """,
+                (
+                    __import__("os").getenv("HUBSTAFF_ORG_ID", ""),
+                    tool_name, json.dumps(args, default=str), status,
+                    result_summary[:500] if result_summary else None,
+                    getattr(ctx, "chat_id", "") or None,
+                ),
+            )
+    except Exception:
+        pass
+
+
+def _hubstaff_list_members(ctx, args) -> str:
+    try:
+        from goldman.hubstaff.client import HubstaffClient
+        from goldman.hubstaff.rates import MemberRateRepository
+        client = HubstaffClient()
+        members, users = client.members()
+        eid = _seo_entity_id(ctx)
+        rates = {r.hubstaff_user_id: r
+                  for r in MemberRateRepository(ctx.conn).list_for_entity(eid)}
+    except Exception as e:
+        _hs_log(ctx, tool_name="list_team_members", args=args,
+                status="blocked_no_creds" if "PAT" in str(e) else "error",
+                result_summary=str(e))
+        return f"Hubstaff unavailable: {e}"
+
+    lines = [f"[ENTITY: Pacific Edge Outsourcing LLC | Hubstaff org {client.org_id}]",
+             f"{len(members)} team member(s):"]
+    for m in members:
+        uid = m["user_id"]
+        u = users.get(uid, {})
+        rate = rates.get(uid)
+        rate_str = (f"${float(rate.rate_amount):.2f}/{rate.rate_unit} {rate.rate_currency}"
+                    if rate else "no rate on file")
+        lines.append(
+            f"  {uid:>9} | {(u.get('name') or u.get('email') or '?'):28} | "
+            f"role={m.get('membership_role'):<5} | status={m.get('membership_status'):<8} | {rate_str}"
+        )
+    _hs_log(ctx, tool_name="list_team_members", args=args,
+            status="executed", result_summary=f"{len(members)} members")
+    return "\n".join(lines)
+
+
+def _parse_date_range(args):
+    start = (args.get("start") or "").strip()
+    stop = (args.get("stop") or "").strip()
+    if not start or not stop:
+        raise ValueError("start and stop are required (YYYY-MM-DD).")
+    return start, stop
+
+
+def _seconds_to_hours(secs) -> float:
+    return round(int(secs or 0) / 3600.0, 2)
+
+
+def _aggregate_hours_per_user(rows):
+    """Return {user_id: (tracked_hours, billable_hours)} from daily rows."""
+    agg = {}
+    for r in rows:
+        uid = r["user_id"]
+        t = int(r.get("tracked") or 0)
+        b = int(r.get("billable") or 0)
+        cur = agg.get(uid, (0, 0))
+        agg[uid] = (cur[0] + t, cur[1] + b)
+    return {uid: (round(t/3600.0, 2), round(b/3600.0, 2))
+             for uid, (t, b) in agg.items()}
+
+
+def _hubstaff_hours_worked(ctx, args) -> str:
+    try:
+        start, stop = _parse_date_range(args)
+        from goldman.hubstaff.client import HubstaffClient
+        client = HubstaffClient()
+        rows = client.daily_activities(start=start, stop=stop)
+        _, users = client.members()
+    except Exception as e:
+        _hs_log(ctx, tool_name="hours_worked", args=args,
+                status="error", result_summary=str(e))
+        return f"Hubstaff unavailable: {e}"
+
+    by_user = _aggregate_hours_per_user(rows)
+    if not by_user:
+        return f"No tracked time between {start} and {stop}."
+
+    lines = [f"[ENTITY: Pacific Edge | Hubstaff org {client.org_id}]",
+             f"Hours tracked {start} → {stop}:"]
+    total_t = 0.0
+    total_b = 0.0
+    # Sort by total hours desc.
+    for uid, (t, b) in sorted(by_user.items(), key=lambda x: -x[1][0]):
+        name = users.get(uid, {}).get("name", f"user_{uid}")
+        lines.append(f"  {name:28} | tracked {t:>6.2f}h | billable {b:>6.2f}h")
+        total_t += t
+        total_b += b
+    lines.append(f"  {'TOTAL':28} | tracked {total_t:>6.2f}h | billable {total_b:>6.2f}h")
+    _hs_log(ctx, tool_name="hours_worked", args=args,
+            status="executed",
+            result_summary=f"{len(by_user)} users, {total_t:.0f}h tracked")
+    return "\n".join(lines)
+
+
+def _hubstaff_set_rate(ctx, args) -> str:
+    try:
+        from goldman.hubstaff.rates import MemberRateRepository
+        uid = int(args.get("hubstaff_user_id"))
+        name = (args.get("full_name") or "").strip()
+        amount = args.get("rate_amount")
+        currency = (args.get("rate_currency") or "USD").upper()
+        unit = (args.get("rate_unit") or "hour").lower()
+        if amount is None or not name:
+            return "set_member_rate error: hubstaff_user_id, full_name, rate_amount are required."
+        eid = _seo_entity_id(ctx)
+        MemberRateRepository(ctx.conn).upsert(
+            entity_id=eid, hubstaff_user_id=uid, full_name=name,
+            rate_amount=amount, rate_currency=currency, rate_unit=unit,
+            notes=args.get("notes", "") or "",
+        )
+    except Exception as e:
+        _hs_log(ctx, tool_name="set_member_rate", args=args,
+                status="error", result_summary=str(e))
+        return f"set_member_rate failed: {e}"
+    _hs_log(ctx, tool_name="set_member_rate", args=args,
+            status="executed",
+            result_summary=f"{name} = {amount} {currency}/{unit}")
+    return (f"[ENTITY: Pacific Edge] Recorded {name} (Hubstaff user {uid}) "
+            f"at ${float(amount):.2f}/{unit} {currency}.")
+
+
+def _hubstaff_payroll_summary(ctx, args) -> str:
+    try:
+        start, stop = _parse_date_range(args)
+        from goldman.hubstaff.client import HubstaffClient
+        from goldman.hubstaff.rates import MemberRateRepository
+        client = HubstaffClient()
+        rows = client.daily_activities(start=start, stop=stop)
+        _, users = client.members()
+        eid = _seo_entity_id(ctx)
+        rates = {r.hubstaff_user_id: r
+                  for r in MemberRateRepository(ctx.conn).list_for_entity(eid)}
+    except Exception as e:
+        _hs_log(ctx, tool_name="payroll_summary", args=args,
+                status="error", result_summary=str(e))
+        return f"Hubstaff unavailable: {e}"
+
+    by_user = _aggregate_hours_per_user(rows)
+    if not by_user:
+        return f"No tracked time between {start} and {stop}."
+
+    lines = [f"[ENTITY: Pacific Edge | Hubstaff org {client.org_id}]",
+             f"Payroll {start} → {stop}:"]
+    missing_rates = []
+    grand_total = 0.0
+    for uid, (t, b) in sorted(by_user.items(), key=lambda x: -x[1][0]):
+        name = users.get(uid, {}).get("name", f"user_{uid}")
+        rate = rates.get(uid)
+        if not rate:
+            lines.append(f"  ⚠️  {name:28} | {t:>6.2f}h | NO RATE ON FILE")
+            missing_rates.append((uid, name))
+            continue
+        # Only hourly rate is supported in computation for now.
+        if rate.rate_unit == "hour":
+            pay = round(t * float(rate.rate_amount), 2)
+        else:
+            lines.append(
+                f"  ⚠️  {name:28} | {t:>6.2f}h | "
+                f"non-hourly rate ({rate.rate_amount} {rate.rate_currency}/{rate.rate_unit}); "
+                f"manual computation needed"
+            )
+            continue
+        lines.append(
+            f"  {name:28} | {t:>6.2f}h × ${float(rate.rate_amount):.2f}/h = "
+            f"${pay:>9.2f} {rate.rate_currency}"
+        )
+        grand_total += pay
+
+    lines.append(f"  {'GRAND TOTAL':28} | ${grand_total:>10.2f}")
+    if missing_rates:
+        lines.append("")
+        lines.append("Missing rates — set them with set_member_rate:")
+        for uid, n in missing_rates:
+            lines.append(f"  • set_member_rate hubstaff_user_id={uid} full_name='{n}' rate_amount=<$/h>")
+    _hs_log(ctx, tool_name="payroll_summary", args=args,
+            status="executed",
+            result_summary=f"total ${grand_total:.2f}, {len(missing_rates)} missing rates")
+    return "\n".join(lines)
+
+
+def _hubstaff_payroll_anomalies(ctx, args) -> str:
+    try:
+        from datetime import datetime, timedelta
+        start, stop = _parse_date_range(args)
+        baseline_weeks = max(1, int(args.get("baseline_weeks", 4)))
+        threshold_pct = float(args.get("threshold_pct", 25.0))
+        d_start = datetime.strptime(start, "%Y-%m-%d").date()
+        d_stop = datetime.strptime(stop, "%Y-%m-%d").date()
+        period_days = max(1, (d_stop - d_start).days + 1)
+        baseline_start = (d_start - timedelta(days=baseline_weeks * 7)).isoformat()
+        baseline_stop = (d_start - timedelta(days=1)).isoformat()
+        from goldman.hubstaff.client import HubstaffClient
+        client = HubstaffClient()
+        current = _aggregate_hours_per_user(
+            client.daily_activities(start=start, stop=stop))
+        baseline = _aggregate_hours_per_user(
+            client.daily_activities(start=baseline_start, stop=baseline_stop))
+        _, users = client.members()
+    except Exception as e:
+        _hs_log(ctx, tool_name="payroll_anomalies", args=args,
+                status="error", result_summary=str(e))
+        return f"Hubstaff unavailable: {e}"
+
+    baseline_days = max(1, baseline_weeks * 7)
+    lines = [f"[ENTITY: Pacific Edge | Hubstaff org {client.org_id}]",
+             f"Anomalies {start} → {stop} vs baseline {baseline_start} → {baseline_stop} "
+             f"(threshold {threshold_pct:.0f}%):"]
+    flagged = 0
+    for uid, (t, _) in sorted(current.items(), key=lambda x: x[0]):
+        name = users.get(uid, {}).get("name", f"user_{uid}")
+        base_total = baseline.get(uid, (0.0, 0.0))[0]
+        # Normalize to same-length period.
+        expected = base_total * (period_days / baseline_days)
+        if expected <= 0:
+            if t > 0:
+                lines.append(f"  🆕 {name:28} | {t:.2f}h this period | no baseline data")
+                flagged += 1
+            continue
+        delta_pct = (t - expected) / expected * 100
+        if abs(delta_pct) >= threshold_pct:
+            sign = "⬆️" if delta_pct > 0 else "⬇️"
+            lines.append(
+                f"  {sign} {name:28} | {t:.2f}h vs expected {expected:.2f}h "
+                f"({delta_pct:+.0f}%)"
+            )
+            flagged += 1
+    if flagged == 0:
+        lines.append("  All within ±{:.0f}% of baseline. No anomalies.".format(threshold_pct))
+    _hs_log(ctx, tool_name="payroll_anomalies", args=args,
+            status="executed", result_summary=f"{flagged} flagged")
     return "\n".join(lines)
