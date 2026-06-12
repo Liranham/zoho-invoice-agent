@@ -1160,45 +1160,47 @@ def _hubstaff_payroll_summary(ctx, args) -> str:
     if not by_user:
         return f"No tracked time between {start} and {stop}."
 
-    lines = [f"[ENTITY: Pacific Edge | Hubstaff org {client.org_id}]",
-             f"Payroll {start} → {stop}:"]
+    # Mobile-friendly Markdown — Telegram wraps long monospace tables
+    # awkwardly on phones, so we use plain one-line-per-VA text.
+    lines = [
+        f"Pacific Edge · Hubstaff org {client.org_id}",
+        f"Payroll {start} → {stop}",
+        "",
+    ]
     missing_rates = []
     grand_total = 0.0
     for uid, (t, b) in sorted(by_user.items(), key=lambda x: -x[1][0]):
         name = users.get(uid, {}).get("name", f"user_{uid}")
         rate = rates.get(uid)
         if not rate:
-            lines.append(f"  ⚠️  {name:28} | {t:>6.2f}h | NO RATE ON FILE")
+            lines.append(f"{name}: {t:.2f}h — no rate on file")
             missing_rates.append((uid, name))
             continue
         if rate.rate_unit == "hour":
             pay = round(t * float(rate.rate_amount), 2)
-        elif rate.rate_unit == "half_month":
-            # Fixed per pay-period amount — no hours math.
-            pay = round(float(rate.rate_amount), 2)
             lines.append(
-                f"  {name:28} | {t:>6.2f}h × half-month "
-                f"= ${pay:>9.2f} {rate.rate_currency} (fixed per pay period)"
+                f"{name}: {t:.2f}h × ${float(rate.rate_amount):.2f} "
+                f"= ${pay:,.2f}"
             )
             grand_total += pay
-            continue
+        elif rate.rate_unit == "half_month":
+            pay = round(float(rate.rate_amount), 2)
+            lines.append(
+                f"{name}: ${pay:,.2f} (half-month fixed; "
+                f"{t:.2f}h tracked)"
+            )
+            grand_total += pay
         else:
             lines.append(
-                f"  ⚠️  {name:28} | {t:>6.2f}h | "
-                f"non-hourly rate ({rate.rate_amount} {rate.rate_currency}/{rate.rate_unit}); "
-                f"manual computation needed"
+                f"{name}: {t:.2f}h — non-hourly rate "
+                f"({rate.rate_amount} {rate.rate_currency}/{rate.rate_unit})"
             )
-            continue
-        lines.append(
-            f"  {name:28} | {t:>6.2f}h × ${float(rate.rate_amount):.2f}/h = "
-            f"${pay:>9.2f} {rate.rate_currency}"
-        )
-        grand_total += pay
 
-    lines.append(f"  {'GRAND TOTAL':28} | ${grand_total:>10.2f}")
+    lines.append("")
+    lines.append(f"*GRAND TOTAL: ${grand_total:,.2f}*")
     if missing_rates:
         lines.append("")
-        lines.append("Missing rates — set them with set_member_rate:")
+        lines.append("_Missing rates — set them with set_member_rate:_")
         for uid, n in missing_rates:
             lines.append(f"  • set_member_rate hubstaff_user_id={uid} full_name='{n}' rate_amount=<$/h>")
     _hs_log(ctx, tool_name="payroll_summary", args=args,

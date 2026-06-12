@@ -191,13 +191,15 @@ def action_payroll_reminder(conn, reminder, today: date) -> str:
         prediction = None
     # 2. Build the user-facing payroll table (re-uses the existing tool).
     body = _payroll_summary_text(conn, start, stop)
+    # Reconciliation hint matches Phase 12 — Hubstaff's own records, not Wise emails.
+    reconcile_day = 10 if stop.day != 15 else 25
     return (
-        f"🗓️  *Payroll reminder — {reminder.name}*\n"
+        f"*Payroll reminder — {reminder.name}*\n"
         f"It's {today.strftime('%a %b %-d')}. Time to send Wise payments "
-        f"for the **{start.isoformat()} → {stop.isoformat()}** period.\n\n"
+        f"for the {start.isoformat()} → {stop.isoformat()} period.\n\n"
         f"{body}\n\n"
-        f"_Goldman saved a prediction for this period — he'll auto-reconcile "
-        f"against your Wise outflows on day {(stop.day + 10) if stop.day == 15 else 10} of next cycle._"
+        f"_Auto-reconciliation against Hubstaff's team payments runs on day "
+        f"{reconcile_day} of next cycle._"
     )
 
 
