@@ -36,12 +36,59 @@ class HubstaffConfigError(RuntimeError):
     pass
 
 
+def _load_persisted_pat() -> Optional[str]:
+    """Read the latest rolling refresh token from goldman.hubstaff_tokens.
+
+    Failures (missing table, DB unavailable, etc.) fall back silently so
+    the client keeps working from the env-var seed during early setup.
+    """
+    try:
+        from goldman_db.connection import app_conn
+        with app_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT refresh_token FROM goldman.hubstaff_tokens WHERE id=1"
+                )
+                row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _persist_pat(new_pat: str) -> None:
+    """Write the rotated refresh token back so future processes pick it up."""
+    try:
+        from goldman_db.connection import app_conn
+        with app_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO goldman.hubstaff_tokens (id, refresh_token)
+                    VALUES (1, %s)
+                    ON CONFLICT (id) DO UPDATE
+                       SET refresh_token = EXCLUDED.refresh_token,
+                           updated_at = now()
+                    """,
+                    (new_pat,),
+                )
+                conn.commit()
+    except Exception:
+        # Persistence failure is non-fatal — the in-memory PAT still works
+        # for the lifetime of this process. The next process will fall back
+        # to the env-var seed, which is the same situation we already had.
+        pass
+
+
 class HubstaffClient:
     """Single thin client. One per process is enough."""
 
     def __init__(self, *, pat: Optional[str] = None,
                  org_id: Optional[str] = None):
-        self.pat = pat or os.getenv("HUBSTAFF_PAT", "")
+        # Priority order for the refresh token:
+        #   1. explicit pat argument (tests, ad-hoc calls)
+        #   2. goldman.hubstaff_tokens row (rolling state — survives rotation)
+        #   3. HUBSTAFF_PAT env var (initial seed)
+        self.pat = pat or _load_persisted_pat() or os.getenv("HUBSTAFF_PAT", "")
         self.org_id = str(org_id or os.getenv("HUBSTAFF_ORG_ID", "")).strip()
         if not self.pat:
             raise HubstaffConfigError("HUBSTAFF_PAT not set.")
@@ -62,10 +109,13 @@ class HubstaffClient:
         # Use 90% of the lifetime as safety margin.
         ttl = int(payload.get("expires_in", 86400)) * 0.9
         self._access_token_expires_at = time.time() + ttl
-        # Hubstaff rotates the refresh token on every exchange.
+        # Hubstaff rotates the refresh token on every exchange. Persist
+        # the new one immediately so a process restart doesn't fall back
+        # to the now-invalid env-var seed.
         new_pat = payload.get("refresh_token")
         if new_pat and new_pat != self.pat:
             self.pat = new_pat
+            _persist_pat(new_pat)
         return self._access_token
 
     def _bearer(self) -> str:
