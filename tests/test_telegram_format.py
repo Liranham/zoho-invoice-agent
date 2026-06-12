@@ -88,9 +88,11 @@ class TelegramFormatTests(unittest.TestCase):
     def test_pipe_table_becomes_pre_block(self):
         out = telegram_format(GOLDMAN_OPEN_INVOICES)
         self.assertIn("<pre>", out, "expected at least one <pre> block from the pipe tables")
-        # Table headers should still be visible inside the <pre>.
-        self.assertIn("Invoice", out)
+        # Data must survive whichever layout (horizontal or vertical) the
+        # formatter picked. The invoice IDs and client name are the
+        # ground-truth payload — both must appear.
         self.assertIn("INV-000081", out)
+        self.assertIn("NorthPoint Enterprises Inc", out)
 
     def test_bold_converted_to_html(self):
         self.assertEqual(
@@ -139,6 +141,66 @@ class TelegramFormatTests(unittest.TestCase):
         self.assertNotIn("**", out)
         self.assertNotIn("###", out)
         self.assertNotIn("|---|", out)
+
+    # ────────────────────────────────────────────────────────────────────
+    # Wide-table → vertical layout (2026-06-11 regression):
+    # Goldman's last-invoice comparison reply rendered as a 6-column
+    # monospace table that wrapped on mobile, collapsing the columns. Wide
+    # tables should now flip to a vertical title + label/value layout.
+    # ────────────────────────────────────────────────────────────────────
+
+    GOLDMAN_LAST_INVOICE_COMPARISON = (
+        "Here's the comparison:\n\n"
+        "| Entity | Last Invoice | Client | Amount | Status | Due Date |\n"
+        "|---|---|---|---|---|---|\n"
+        "| AMZ-Expert Global (HK) | INV-000081 | NorthPoint Enterprises Inc | $1,300.00 | Sent | 2026-05-31 |\n"
+        "| Pacific Edge (US) | INV-000027 | Gilad Weinberg | $3,493.89 | Overdue | 2026-04-07 |\n\n"
+        "Worth noting: the Pacific Edge invoice (**INV-000027** for Gilad Weinberg) is **overdue** — "
+        "would you like me to draft a payment reminder for that one?"
+    )
+
+    def test_wide_table_uses_vertical_layout(self):
+        out = telegram_format(self.GOLDMAN_LAST_INVOICE_COMPARISON)
+        # The table belongs in a <pre> block.
+        self.assertIn("<pre>", out)
+        # Vertical layout means each header label appears multiple times
+        # (once per data row), and each row's title is on its own line.
+        # The monospace layout joins them on a single line per row.
+        pre_start = out.index("<pre>") + len("<pre>")
+        pre_end = out.index("</pre>", pre_start)
+        pre_body = out[pre_start:pre_end]
+        # In vertical mode, "Last Invoice" appears twice (once per data row);
+        # in horizontal mode it appears once (header row only).
+        self.assertEqual(
+            pre_body.count("Last Invoice"),
+            2,
+            f"expected vertical layout (2x 'Last Invoice'), got: {pre_body!r}",
+        )
+        # Both entity titles must be present as their own lines.
+        self.assertIn("AMZ-Expert Global (HK)", pre_body)
+        self.assertIn("Pacific Edge (US)", pre_body)
+        # The label-value pairs should still be there.
+        self.assertIn("INV-000081", pre_body)
+        self.assertIn("Overdue", pre_body)
+
+    def test_narrow_table_stays_horizontal(self):
+        # A small 2x3 table well within the 42-char monospace budget
+        # should stay as horizontal aligned columns — the vertical
+        # fallback is only for wide tables.
+        narrow = "| SKU | Units |\n|---|---|\n| A | 5 |\n| B | 12 |"
+        out = telegram_format(narrow)
+        pre_start = out.index("<pre>") + len("<pre>")
+        pre_end = out.index("</pre>", pre_start)
+        pre_body = out[pre_start:pre_end]
+        # In horizontal mode, "Units" appears once (header row only).
+        self.assertEqual(pre_body.count("Units"), 1, f"narrow table should stay horizontal: {pre_body!r}")
+        # Both data rows live on a single line — A and 5 on the same row,
+        # B and 12 on the same row.
+        for line in pre_body.split("\n"):
+            if line.lstrip().startswith("A"):
+                self.assertIn("5", line, f"A and 5 should share a line: {line!r}")
+            if line.lstrip().startswith("B"):
+                self.assertIn("12", line, f"B and 12 should share a line: {line!r}")
 
 
 if __name__ == "__main__":

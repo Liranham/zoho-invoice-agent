@@ -53,40 +53,119 @@ def _escape_html_attr(text: str) -> str:
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Pipe table → aligned monospace text (rendered inside <pre>).
-# Drops the |---|---|---| separator row, pads columns to even width.
+# Pipe table → either aligned monospace OR vertical label/value blocks,
+# both rendered inside <pre>. We pick by total monospace width:
+#
+#   - Narrow tables (≤ MAX_MONO_TABLE_WIDTH chars) render as horizontal
+#     monospace columns. Looks like a real table on desktop AND mobile.
+#   - Wide tables wrap on mobile and turn into a column-collapsed mess.
+#     We re-render those as vertical blocks: each data row becomes a
+#     "title + label/value" block. Always reads cleanly on a phone.
+#
+# Tradeoff: vertical mode loses the visual side-by-side comparison
+# between rows, but a wrapped monospace table loses it too (and is
+# uglier). Vertical wins.
 # ────────────────────────────────────────────────────────────────────────
 
 _PIPE_SEPARATOR_LINE_RE = re.compile(r"^\s*\|[\s\-:+|]+\|\s*$")
 
+# Roughly the safe monospace width before Telegram mobile wraps. Tuned to
+# what fits on an iPhone in portrait without horizontal scroll. Tables
+# wider than this flip to the vertical layout below.
+_MAX_MONO_TABLE_WIDTH = 42
 
-def _format_pipe_table(raw: str) -> str:
-    """Render a markdown pipe table as aligned monospace text."""
-    lines = raw.split("\n")
-    data_lines = [l for l in lines if not _PIPE_SEPARATOR_LINE_RE.match(l)]
-    rows = []
-    for line in data_lines:
+
+def _parse_pipe_rows(raw: str) -> list[list[str]]:
+    """Parse a markdown pipe table into rows. Strips the |---|---| separator."""
+    rows: list[list[str]] = []
+    for line in raw.split("\n"):
+        if _PIPE_SEPARATOR_LINE_RE.match(line):
+            continue
         s = line.strip()
         if not s.startswith("|"):
             continue
-        # Drop the leading and trailing pipe, split on the rest.
         cells = [c.strip() for c in s.split("|")[1:-1]]
         rows.append(cells)
-    if not rows:
-        return raw
-    # Compute column widths.
-    widths: list[int] = []
-    for row in rows:
-        for i, cell in enumerate(row):
-            while len(widths) <= i:
-                widths.append(0)
-            widths[i] = max(widths[i], len(cell))
-    # Render padded rows separated by two spaces.
+    return rows
+
+
+def _render_table_mono(rows: list[list[str]], widths: list[int]) -> str:
+    """Horizontal monospace columns, separated by two spaces."""
     out_rows = []
     for row in rows:
-        padded = [row[i].ljust(widths[i]) if i < len(row) else "" for i in range(len(widths))]
+        padded = [
+            (row[i] if i < len(row) else "").ljust(widths[i])
+            for i in range(len(widths))
+        ]
         out_rows.append("  ".join(padded).rstrip())
     return "\n".join(out_rows)
+
+
+def _render_table_vertical(rows: list[list[str]]) -> str:
+    """Wide tables → vertical label/value blocks.
+
+    Layout: row 0 holds the column headers. For each data row, render
+    block of:
+
+        {row[0]}                       ← title line (first column value)
+        {header[1].ljust(W)}  {row[1]} ← label/value, label padded to W
+        {header[2].ljust(W)}  {row[2]}
+        ...
+
+    Blocks separated by a blank line so the user can scan row-by-row.
+    """
+    if len(rows) < 2:
+        # Only a header row, no data — nothing useful to flip.
+        return _render_table_mono(rows, _compute_widths(rows))
+    headers = rows[0]
+    data_rows = rows[1:]
+    # Labels are columns 1..N (column 0 is the per-row title).
+    if len(headers) < 2:
+        # Single-column table — fall back to mono since there's nothing
+        # to label.
+        return _render_table_mono(rows, _compute_widths(rows))
+    label_width = max(len(headers[i]) for i in range(1, len(headers)))
+    blocks: list[str] = []
+    for row in data_rows:
+        title = row[0] if row else ""
+        lines = [title] if title else []
+        for col in range(1, len(headers)):
+            label = headers[col]
+            value = row[col] if col < len(row) else ""
+            lines.append(f"{label.ljust(label_width)}  {value}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _compute_widths(rows: list[list[str]]) -> list[int]:
+    if not rows:
+        return []
+    n_cols = max(len(r) for r in rows)
+    widths = [0] * n_cols
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+    return widths
+
+
+def _format_pipe_table(raw: str) -> str:
+    """Render a markdown pipe table for Telegram <pre> display.
+
+    Returns aligned monospace text if it fits in MAX_MONO_TABLE_WIDTH;
+    otherwise returns the vertical label/value layout described above.
+    Both layouts go inside the same <pre> wrapper by the caller.
+    """
+    rows = _parse_pipe_rows(raw)
+    if not rows:
+        return raw
+    widths = _compute_widths(rows)
+    mono_width = sum(widths) + 2 * (len(widths) - 1)
+    # Vertical is only meaningful when there are ≥3 columns and ≥2 rows
+    # (header + at least one data row). For 1-2 col tables monospace is
+    # fine even when wide because it's a short list of label/value rows.
+    if mono_width > _MAX_MONO_TABLE_WIDTH and len(widths) >= 3 and len(rows) >= 2:
+        return _render_table_vertical(rows)
+    return _render_table_mono(rows, widths)
 
 
 # ────────────────────────────────────────────────────────────────────────
