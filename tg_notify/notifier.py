@@ -1,11 +1,16 @@
 """
 Simple Telegram notifications.
 
-Sends messages to a Telegram chat via HTTP API.
+Sends messages to a Telegram chat via HTTP API. All outbound text flows
+through utils.telegram_format so any LLM-style markdown (`**bold**`,
+`# Heading`, pipe tables, `[label](url)`) renders as proper HTML instead
+of arriving as literal characters in the Telegram client.
 """
 
 import logging
 import requests
+
+from utils.telegram_format import telegram_format
 
 logger = logging.getLogger(__name__)
 
@@ -25,29 +30,33 @@ class TelegramNotifier:
         self.chat_id = chat_id
         self.api_url = f"https://api.telegram.org/bot{bot_token}"
 
-    def send_message(self, text: str, parse_mode: str = "Markdown") -> bool:
+    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """
         Send a text message.
 
         Args:
-            text: Message text
-            parse_mode: Message formatting (Markdown or HTML)
+            text: Message text (markdown or plain — runs through
+                telegram_format so LLM-style markdown converts cleanly).
+            parse_mode: Message formatting. Defaults to "HTML" because
+                telegram_format emits HTML; pass "Markdown" only if you
+                want to bypass the formatter (legacy behaviour).
 
         Returns:
-            True if sent successfully
+            True if sent successfully.
         """
         try:
+            body = telegram_format(text or "") if parse_mode == "HTML" else text
             response = requests.post(
                 f"{self.api_url}/sendMessage",
                 json={
                     "chat_id": self.chat_id,
-                    "text": text,
+                    "text": body,
                     "parse_mode": parse_mode,
                 },
                 timeout=10,
             )
             response.raise_for_status()
-            logger.debug(f"Sent Telegram message: {text[:50]}...")
+            logger.debug(f"Sent Telegram message: {body[:50]}...")
             return True
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")

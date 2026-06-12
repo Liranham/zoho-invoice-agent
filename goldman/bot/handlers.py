@@ -16,6 +16,26 @@ from goldman_db.connection import app_conn
 from goldman_db.conversation_turns import ConversationTurnRepository
 from goldman_db.entities import EntityRepository
 from goldman_db.pending_confirmations import PendingConfirmationRepository
+from utils.telegram_format import telegram_format
+
+
+async def _reply_html(message, text: str, **kwargs):
+    """Send a reply through the Telegram HTML pipeline so the LLM's
+    markdown (`**bold**`, `# Heading`, `|---|---|`, `[label](url)`)
+    renders as actual formatting instead of arriving as literal characters
+    in the Telegram client.
+
+    Every outbound message from Goldman goes through this — single source
+    of truth for Telegram formatting, mirrors the same pattern in Bob
+    (ai-personal-assistant/telegram_bot/bot.py) and the Slack composer
+    (amz-expert-hq-hub/supabase/functions/_shared/slack-format.ts).
+    """
+    formatted = telegram_format(text or "")
+    return await message.reply_text(
+        formatted or "(empty reply)",
+        parse_mode="HTML",
+        **kwargs,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +96,10 @@ async def _intake_general_document(*, update, tmp_path, original_filename,
     )
 
     if entity_slug is None:
-        await msg.reply_text(
-            f"Got *{original_filename}* — couldn't tell which company "
+        await _reply_html(
+            msg,
+            f"Got **{original_filename}** — couldn't tell which company "
             f"it's for. Reply with the company name and I'll file it.",
-            parse_mode="Markdown",
         )
         return
 
@@ -127,11 +147,11 @@ async def _intake_general_document(*, update, tmp_path, original_filename,
             drive_category=category,
         )
 
-    await msg.reply_text(
-        f"Filed *{original_filename}* under "
-        f"*{ent.legal_name} / {category}*\n"
+    await _reply_html(
+        msg,
+        f"Filed **{original_filename}** under "
+        f"**{ent.legal_name} / {category}**\n"
         f"Indexed {result.chunk_count} chunk(s). Ask me anything about it.",
-        parse_mode="Markdown",
     )
 
 
@@ -180,6 +200,45 @@ the uploaded documents are the specifics for THIS company.
 
 You NEVER move money, file taxes, sign contracts, or delete data.
 You prepare, draft, recommend, and alert; the user executes.
+
+TELEGRAM FORMATTING — HOW YOUR REPLY GETS RENDERED:
+You are writing for Telegram. The server-side formatter converts your
+markdown into Telegram HTML before sending. Write structured markdown
+deliberately — it will render as a polished, organized reply.
+
+Conversions the formatter applies for you:
+- `**bold**` and `# Heading` → real bold text (Telegram HTML <b>).
+- Pipe tables → a monospace grey-box block (Telegram <pre>). The
+  `|---|---|` separator row is stripped automatically, and columns are
+  padded to even width. USE pipe tables for any multi-row metric data
+  (open invoices, P&L lines, vendor totals).
+- `[Label](url)` → a clickable Telegram link.
+- ``` triple-backtick blocks → monospace grey-box (use for raw IDs,
+  SQL, code).
+- `---` divider lines → stripped (Telegram has no horizontal rule).
+- `<`, `>`, `&` in your text are HTML-escaped automatically — write
+  them naturally.
+
+What NOT to write:
+- `### H3` or `## H2` subheaders — one `# H1` at the top is enough
+  if a header helps. Telegram replies should feel like a colleague's
+  chat, not a report.
+- Long bulleted breakdowns when a pipe table is clearer.
+- Decorative dividers like `---`.
+
+Reply shape for a typical data answer:
+  # {Topic} — {Scope}
+  {One- or two-sentence headline finding with the key number in **bold**.}
+
+  | {Column} | {Column} | {Column} |
+  |---|---|---|
+  | ... | ... | ... |
+
+  {One short paragraph of "what this means" — actionable, no padding.}
+
+Keep replies short and scannable. A great Telegram reply is a header +
+1-2 short paragraphs + (optionally) one pipe table + (optionally) a
+question or proposed next action at the end.
 """
 
 
@@ -254,7 +313,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         bot_sessions.touch("telegram", str(chat_id))
 
-    await update.message.reply_text(reply or "(empty reply)")
+    await _reply_html(update.message, reply or "(empty reply)")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
