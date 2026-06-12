@@ -448,6 +448,86 @@ TOOL_SCHEMAS = [
             "required": ["name"],
         },
     },
+    # ---- Phase 13: Wise (Pacific Edge cash + payments — read-only) ----
+    # The Wise integration is intentionally READ ONLY. The Personal Token
+    # has access to read endpoints + create unfunded transfer shells, but
+    # the SCA private key required to actually move money was deliberately
+    # NEVER uploaded. Funding/debit endpoints will fail at Wise's side.
+    {
+        "name": "wise_balances",
+        "description": (
+            "Current Wise balances across every currency for the Pacific "
+            "Edge business profile. Returns one row per currency: amount, "
+            "reserved, available. Use for 'how much USD/EUR/etc do we have', "
+            "'show me my Wise balance', cash-runway questions."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wise_transactions",
+        "description": (
+            "List Wise transfers (in/out) over a date range. Filterable by "
+            "status (outgoing_payment_sent, funds_converted, etc.). Use for "
+            "'show me last month's outflows', 'what did Wise send for "
+            "payroll on the 23rd', 'list all transfers to Raquel in 2026'. "
+            "Dates accept either YYYY-MM-DD or full ISO-8601."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start":  {"type": "string", "description": "YYYY-MM-DD"},
+                "stop":   {"type": "string", "description": "YYYY-MM-DD"},
+                "status": {"type": "string", "description": "Optional Wise status filter."},
+                "limit":  {"type": "integer", "default": 50},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "wise_recipients",
+        "description": (
+            "List Wise recipient accounts (everyone you've ever sent money "
+            "to). Use for 'who's on my Wise contacts', 'do I have Raquel set "
+            "up as a recipient', cross-checking against the Hubstaff team."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 100}},
+        },
+    },
+    {
+        "name": "wise_cash_dashboard",
+        "description": (
+            "One-shot CFO snapshot: every Wise balance + last 14 days of net "
+            "flow + count of outgoing transfers + the largest 5 outflows in "
+            "that window. Use for 'give me a Wise overview', daily standup-"
+            "style summary, runway checks."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wise_archive_statement",
+        "description": (
+            "Pull a Wise CSV statement for a balance + month, upload it to "
+            "the Pacific Edge / <year> / Statements Drive folder for "
+            "accountant prep. Use for monthly close-out: 'archive May 2026 "
+            "Wise USD statement', 'file last month's Wise statement'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "balance_id": {"type": "string",
+                                "description": "Wise balance ID — see wise_balances output."},
+                "currency":   {"type": "string",
+                                "description": "e.g. USD. Used in the filename."},
+                "start":      {"type": "string",
+                                "description": "YYYY-MM-DD start of period."},
+                "stop":       {"type": "string",
+                                "description": "YYYY-MM-DD end of period."},
+            },
+            "required": ["balance_id", "currency", "start", "stop"],
+        },
+    },
 ]
 
 
@@ -522,6 +602,17 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _disable_reminder(ctx, arguments)
     if name == "fire_reminder_now":
         return _fire_reminder_now(ctx, arguments)
+    # Phase 13: Wise (read-only)
+    if name == "wise_balances":
+        return _wise_balances(ctx, arguments)
+    if name == "wise_transactions":
+        return _wise_transactions(ctx, arguments)
+    if name == "wise_recipients":
+        return _wise_recipients(ctx, arguments)
+    if name == "wise_cash_dashboard":
+        return _wise_cash_dashboard(ctx, arguments)
+    if name == "wise_archive_statement":
+        return _wise_archive_statement(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1371,3 +1462,243 @@ def _fire_reminder_now(ctx, args) -> str:
     return ("✓ Fired and delivered." if delivered
             else "✗ Generated message but Telegram delivery failed.") + \
            f"\nPreview (first 800 chars):\n{text[:800]}"
+
+
+# =====================================================================
+# Phase 13 — Wise tools (read-only)
+# =====================================================================
+
+def _wise_log(ctx, *, tool_name: str, args: dict, status: str,
+              result_summary: str = "", profile_id: str = "") -> None:
+    import json
+    try:
+        with ctx.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO goldman.wise_audit
+                  (profile_id, tool_name, arguments, status,
+                   result_summary, channel_id)
+                VALUES (%s, %s, %s::jsonb, %s, %s, %s)
+                """,
+                (
+                    profile_id or None, tool_name,
+                    json.dumps(args, default=str),
+                    status,
+                    result_summary[:500] if result_summary else None,
+                    getattr(ctx, "chat_id", "") or None,
+                ),
+            )
+    except Exception:
+        pass
+
+
+def _norm_date(s: str) -> str:
+    """Accept YYYY-MM-DD or full ISO-8601. Always return ISO-8601 with Z."""
+    s = (s or "").strip()
+    if not s:
+        return s
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        return f"{s}T00:00:00.000Z"
+    return s
+
+
+def _wise_balances(ctx, args) -> str:
+    try:
+        from goldman.wise.client import WiseClient
+        client = WiseClient()
+        balances = client.balances()
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_balances", args=args,
+                  status="blocked_no_creds" if "WISE_API_TOKEN" in str(e) else "error",
+                  result_summary=str(e))
+        return f"Wise unavailable: {e}"
+
+    if not balances:
+        return "No Wise balances found."
+    lines = ["Wise balances (Pacific Edge):"]
+    for b in balances:
+        cur = b.get("currency", "?")
+        amt = b.get("amount", {})
+        val = amt.get("value", 0) if isinstance(amt, dict) else amt
+        reserved = b.get("reservedAmount", {})
+        rv = reserved.get("value", 0) if isinstance(reserved, dict) else 0
+        lines.append(f"  {cur}: {float(val):,.2f}"
+                     + (f"  (reserved {float(rv):,.2f})" if rv else "")
+                     + f"  id={b.get('id')}")
+    _wise_log(ctx, tool_name="wise_balances", args=args, status="executed",
+              result_summary=f"{len(balances)} currencies",
+              profile_id=client._profile_id or "")
+    return "\n".join(lines)
+
+
+def _wise_transactions(ctx, args) -> str:
+    try:
+        from goldman.wise.client import WiseClient
+        client = WiseClient()
+        rows = client.transfers(
+            created_after=_norm_date(args.get("start", "")),
+            created_before=_norm_date(args.get("stop", "")),
+            status=args.get("status", ""),
+            limit=int(args.get("limit", 50)),
+        )
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_transactions", args=args,
+                  status="error", result_summary=str(e))
+        return f"Wise unavailable: {e}"
+    if not rows:
+        return f"No Wise transfers between {args.get('start')} and {args.get('stop')}."
+
+    lines = [f"{len(rows)} Wise transfer(s) {args.get('start')} → {args.get('stop')}:"]
+    for t in rows[: int(args.get("limit", 50))]:
+        src = t.get("sourceCurrency", "?")
+        src_amt = t.get("sourceValue", 0) or 0
+        tgt = t.get("targetCurrency", "?")
+        tgt_amt = t.get("targetValue", 0) or 0
+        status = t.get("status", "?")
+        created = (t.get("created") or "")[:10]
+        ref = t.get("reference", "") or ""
+        tid = t.get("id", "")
+        lines.append(
+            f"  {created} {tid} | {status:24} | "
+            f"{src_amt:,.2f} {src} → {tgt_amt:,.2f} {tgt}"
+            + (f" | {ref[:40]}" if ref else "")
+        )
+    _wise_log(ctx, tool_name="wise_transactions", args=args, status="executed",
+              result_summary=f"{len(rows)} transfers",
+              profile_id=client._profile_id or "")
+    return "\n".join(lines)
+
+
+def _wise_recipients(ctx, args) -> str:
+    try:
+        from goldman.wise.client import WiseClient
+        client = WiseClient()
+        recs = client.recipients(limit=int(args.get("limit", 100)))
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_recipients", args=args,
+                  status="error", result_summary=str(e))
+        return f"Wise unavailable: {e}"
+    if not recs:
+        return "No Wise recipients on file."
+
+    lines = [f"{len(recs)} Wise recipient(s):"]
+    for r in recs:
+        name = (r.get("name", {}).get("fullName")
+                or r.get("accountHolderName", "?"))
+        cur = r.get("currency", "?")
+        country = r.get("country", "")
+        lines.append(f"  {r.get('id')} | {name} | {cur}"
+                     + (f" | {country}" if country else ""))
+    _wise_log(ctx, tool_name="wise_recipients", args=args, status="executed",
+              result_summary=f"{len(recs)} recipients",
+              profile_id=client._profile_id or "")
+    return "\n".join(lines)
+
+
+def _wise_cash_dashboard(ctx, args) -> str:
+    from datetime import datetime, timedelta, timezone
+    try:
+        from goldman.wise.client import WiseClient
+        client = WiseClient()
+        balances = client.balances()
+        stop = datetime.now(timezone.utc)
+        start = stop - timedelta(days=14)
+        transfers = client.transfers(
+            created_after=start.isoformat().replace("+00:00", "Z"),
+            created_before=stop.isoformat().replace("+00:00", "Z"),
+            limit=200,
+        )
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_cash_dashboard", args=args,
+                  status="error", result_summary=str(e))
+        return f"Wise unavailable: {e}"
+
+    lines = ["Wise CFO dashboard — Pacific Edge:"]
+    lines.append("")
+    lines.append("Balances:")
+    if not balances:
+        lines.append("  (no balances)")
+    for b in balances:
+        cur = b.get("currency", "?")
+        amt = b.get("amount", {})
+        val = amt.get("value", 0) if isinstance(amt, dict) else amt
+        lines.append(f"  {cur}: {float(val):,.2f}")
+
+    outflows = [t for t in transfers if t.get("status") in
+                ("outgoing_payment_sent", "funds_converted",
+                 "incoming_payment_waiting", "processing")]
+    out_count = len([t for t in transfers if "out" in (t.get("status") or "").lower()
+                      or t.get("sourceCurrency") and t.get("targetCurrency")])
+    lines.append("")
+    lines.append(f"Last 14 days: {len(transfers)} transfers total, "
+                 f"~{out_count} outflows.")
+
+    big = sorted(transfers, key=lambda t: -(t.get("sourceValue") or 0))[:5]
+    if big:
+        lines.append("")
+        lines.append("Largest 5 transfers in window:")
+        for t in big:
+            src = float(t.get("sourceValue") or 0)
+            scur = t.get("sourceCurrency", "")
+            lines.append(
+                f"  {(t.get('created') or '')[:10]} | "
+                f"{src:,.2f} {scur} | {t.get('status','?')}"
+            )
+    _wise_log(ctx, tool_name="wise_cash_dashboard", args=args, status="executed",
+              result_summary=f"{len(balances)} balances, {len(transfers)} transfers",
+              profile_id=client._profile_id or "")
+    return "\n".join(lines)
+
+
+def _wise_archive_statement(ctx, args) -> str:
+    import os
+    from datetime import datetime
+    from pathlib import Path
+    bal_id = (args.get("balance_id") or "").strip()
+    currency = (args.get("currency") or "").upper()
+    start = (args.get("start") or "").strip()
+    stop = (args.get("stop") or "").strip()
+    if not (bal_id and currency and start and stop):
+        return "wise_archive_statement error: balance_id, currency, start, stop required."
+
+    try:
+        from goldman.wise.client import WiseClient
+        client = WiseClient()
+        csv_bytes = client.statement_csv(
+            balance_id=bal_id,
+            start=_norm_date(start), stop=_norm_date(stop),
+        )
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_archive_statement", args=args,
+                  status="error", result_summary=str(e))
+        return f"Wise statement fetch failed: {e}"
+
+    filename = f"Wise_{currency}_{start}_to_{stop}.csv"
+    # Drive upload (best effort; falls back to status reply on failure).
+    drive_url = ""
+    try:
+        from goldman.drive.client import GoogleDriveClient
+        from goldman.drive.folders import ensure_path
+        dc = GoogleDriveClient()
+        root = os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID")
+        year = start[:4]
+        folder = ensure_path(dc, ["Pacific Edge Outsourcing LLC", year, "Statements"],
+                              root_id=root)
+        result = dc.upload_file(name=filename, parent_id=folder,
+                                 content=csv_bytes, mime_type="text/csv")
+        drive_url = result.get("url", "")
+    except Exception as e:
+        _wise_log(ctx, tool_name="wise_archive_statement", args=args,
+                  status="error",
+                  result_summary=f"drive upload failed: {e}",
+                  profile_id=client._profile_id or "")
+        return (f"Statement pulled ({len(csv_bytes):,} bytes) but Drive upload "
+                f"failed: {e}")
+
+    _wise_log(ctx, tool_name="wise_archive_statement", args=args,
+              status="executed",
+              result_summary=f"{filename} → {drive_url}",
+              profile_id=client._profile_id or "")
+    return (f"Filed {filename} → Pacific Edge / {start[:4]} / Statements\n"
+            f"  size: {len(csv_bytes):,} bytes\n"
+            f"  link: {drive_url}")

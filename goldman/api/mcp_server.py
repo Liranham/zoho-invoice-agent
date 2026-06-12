@@ -485,6 +485,52 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    # ---- Phase 13: Wise (read-only) ----
+    {
+        "name": "wise_balances",
+        "description": "Current Wise balances per currency for Pacific Edge.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wise_transactions",
+        "description": "Wise transfers in a date range. Dates YYYY-MM-DD or ISO-8601.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string"}, "stop": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["start", "stop"],
+        },
+    },
+    {
+        "name": "wise_recipients",
+        "description": "List Wise recipients for Pacific Edge.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 100}},
+        },
+    },
+    {
+        "name": "wise_cash_dashboard",
+        "description": "Balances + last-14-day flow summary.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "wise_archive_statement",
+        "description": "Pull a Wise CSV statement, file it in Pacific Edge / <year> / Statements Drive folder.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "balance_id": {"type": "string"},
+                "currency": {"type": "string"},
+                "start": {"type": "string"},
+                "stop": {"type": "string"},
+            },
+            "required": ["balance_id", "currency", "start", "stop"],
+        },
+    },
 ]
 
 
@@ -633,6 +679,8 @@ def _run_tool(name: str, arguments: dict) -> str:
         "list_team_members", "hours_worked", "set_member_rate",
         "payroll_summary", "payroll_anomalies",
         "set_reminder", "list_reminders", "disable_reminder", "fire_reminder_now",
+        "wise_balances", "wise_transactions", "wise_recipients",
+        "wise_cash_dashboard", "wise_archive_statement",
     }
     if name in AGENT_TOOLS:
         from goldman.bot.tools import ToolContext, execute_tool
