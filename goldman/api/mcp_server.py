@@ -531,6 +531,11 @@ TOOLS = [
             "required": ["balance_id", "currency", "start", "stop"],
         },
     },
+    {
+        "name": "wise_diagnose",
+        "description": "DIAGNOSTIC ONLY: dump Wise profiles + probe balance endpoints. Use when wise_balances comes back empty.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -680,7 +685,7 @@ def _run_tool(name: str, arguments: dict) -> str:
         "payroll_summary", "payroll_anomalies",
         "set_reminder", "list_reminders", "disable_reminder", "fire_reminder_now",
         "wise_balances", "wise_transactions", "wise_recipients",
-        "wise_cash_dashboard", "wise_archive_statement",
+        "wise_cash_dashboard", "wise_archive_statement", "wise_diagnose",
     }
     if name in AGENT_TOOLS:
         from goldman.bot.tools import ToolContext, execute_tool

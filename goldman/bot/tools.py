@@ -528,6 +528,15 @@ TOOL_SCHEMAS = [
             "required": ["balance_id", "currency", "start", "stop"],
         },
     },
+    {
+        "name": "wise_diagnose",
+        "description": (
+            "DIAGNOSTIC ONLY — dumps Wise /v1/profiles and probes balance "
+            "endpoints so we can debug why wise_balances comes back empty. "
+            "Use only when troubleshooting; reveals raw profile metadata."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -613,6 +622,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _wise_cash_dashboard(ctx, arguments)
     if name == "wise_archive_statement":
         return _wise_archive_statement(ctx, arguments)
+    if name == "wise_diagnose":
+        return _wise_diagnose(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1702,3 +1713,50 @@ def _wise_archive_statement(ctx, args) -> str:
     return (f"Filed {filename} → Pacific Edge / {start[:4]} / Statements\n"
             f"  size: {len(csv_bytes):,} bytes\n"
             f"  link: {drive_url}")
+
+
+def _wise_diagnose(ctx, args) -> str:
+    """Read-only diagnostic: lists profiles + probes balance endpoints."""
+    try:
+        from goldman.wise.client import WiseClient, WiseConfigError
+    except ImportError:
+        return "Wise client unavailable."
+    try:
+        client = WiseClient()
+    except WiseConfigError as e:
+        return f"Wise unavailable: {e}"
+    try:
+        data = client.diagnose()
+    except Exception as e:
+        return f"Wise diagnose error: {e}"
+
+    lines = []
+    profs = data.get("profiles") or []
+    if data.get("profiles_error"):
+        lines.append(f"profiles_error: {data['profiles_error']}")
+    lines.append(f"profiles ({len(profs)}):")
+    for p in profs:
+        pid = p.get("id")
+        ptype = p.get("type")
+        details = p.get("details") or {}
+        biz = p.get("businessName") or details.get("name") or ""
+        first = details.get("firstName", "")
+        last = details.get("lastName", "")
+        nm = biz or f"{first} {last}".strip()
+        lines.append(f"  - id={pid} type={ptype} name={nm}")
+    if data.get("selected_profile_id"):
+        lines.append(f"selected: {data['selected_profile_id']}")
+    if data.get("profile_id_error"):
+        lines.append(f"profile_id_error: {data['profile_id_error']}")
+    lines.append("balance probes:")
+    for a in data.get("balance_attempts", []):
+        if "error" in a:
+            lines.append(f"  - {a['path']} params={a.get('params')} → ERROR {a['error']}")
+        else:
+            preview = a.get("preview", "")[:300]
+            lines.append(f"  - {a['path']} params={a.get('params')} → {a.get('kind')}: {preview}")
+
+    _wise_log(ctx, tool_name="wise_diagnose", args=args,
+              status="executed", result_summary=f"profiles={len(profs)}",
+              profile_id=str(data.get("selected_profile_id") or ""))
+    return "\n".join(lines)

@@ -117,13 +117,67 @@ class WiseClient:
     # ---- balances --------------------------------------------------------
 
     def balances(self, *, types: str = "STANDARD") -> list:
-        """Returns one dict per currency: {id, currency, amount, reservedAmount, ...}."""
+        """Returns one dict per currency: {id, currency, amount, reservedAmount, ...}.
+
+        Tries v4 first; some older accounts only have v3/v1 balances enabled
+        for personal profiles, so fall through gracefully.
+        """
         pid = self.profile_id()
-        data = self._get(f"/v4/profiles/{pid}/balances", {"types": types})
-        # v4 response can be either a list or {balances: [...]}
-        if isinstance(data, list):
-            return data
-        return data.get("balances", []) or []
+        for path, params in (
+            (f"/v4/profiles/{pid}/balances", {"types": types}),
+            (f"/v3/borderless-accounts", {"profileId": pid}),
+            (f"/v1/borderless-accounts", {"profileId": pid}),
+        ):
+            try:
+                data = self._get(path, params)
+            except Exception:
+                continue
+            # v4 shape: list of balance objects directly OR {balances:[...]}.
+            if isinstance(data, list) and data:
+                # v3/v1 nest balances inside accounts[].balances
+                if "balances" in data[0]:
+                    flat = []
+                    for acc in data:
+                        flat.extend(acc.get("balances", []) or [])
+                    if flat:
+                        return flat
+                return data
+            if isinstance(data, dict) and data.get("balances"):
+                return data["balances"]
+        return []
+
+    def diagnose(self) -> dict:
+        """Return raw profile + balance probe results. Read-only diagnostic."""
+        out = {"profiles": [], "balance_attempts": []}
+        try:
+            out["profiles"] = self._get("/v1/profiles") or []
+        except Exception as e:
+            out["profiles_error"] = str(e)[:200]
+        pid = None
+        try:
+            pid = self.profile_id()
+            out["selected_profile_id"] = pid
+        except Exception as e:
+            out["profile_id_error"] = str(e)[:200]
+        if pid:
+            for path, params in (
+                (f"/v4/profiles/{pid}/balances", {"types": "STANDARD"}),
+                (f"/v4/profiles/{pid}/balances", None),
+                (f"/v3/borderless-accounts", {"profileId": pid}),
+            ):
+                try:
+                    r = self._get(path, params)
+                    out["balance_attempts"].append({
+                        "path": path, "params": params,
+                        "kind": type(r).__name__,
+                        "preview": str(r)[:400],
+                    })
+                except Exception as e:
+                    out["balance_attempts"].append({
+                        "path": path, "params": params,
+                        "error": str(e)[:200],
+                    })
+        return out
 
     # ---- transfers -------------------------------------------------------
 
