@@ -28,10 +28,13 @@ def test_hours_worked_requires_dates():
 
 
 def test_list_team_members_no_pat_returns_friendly_error(monkeypatch):
+    # Phase 11 persistence: also stub the DB-cached PAT lookup to return None,
+    # otherwise the client picks up a real persisted PAT from the live DB.
     monkeypatch.delenv("HUBSTAFF_PAT", raising=False)
-    ctx = MagicMock()
-    ctx.conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("seo-id",)
-    out = execute_tool(ctx=ctx, name="list_team_members", arguments={})
+    with patch("goldman.hubstaff.client._load_persisted_pat", return_value=None):
+        ctx = MagicMock()
+        ctx.conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("seo-id",)
+        out = execute_tool(ctx=ctx, name="list_team_members", arguments={})
     assert "HUBSTAFF_PAT" in out or "unavailable" in out.lower()
 
 
