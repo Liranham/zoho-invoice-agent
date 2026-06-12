@@ -95,8 +95,13 @@ class WiseClient:
         if self._profile_id:
             return self._profile_id
         profiles = self._get("/v1/profiles") or []
-        # Prefer a BUSINESS profile; fall back to the first one.
-        business = next((p for p in profiles if p.get("type") == "BUSINESS"), None)
+        # Prefer a BUSINESS profile (Wise returns lowercase "business");
+        # fall back to the first one.
+        business = next(
+            (p for p in profiles
+             if (p.get("type") or "").upper() == "BUSINESS"),
+            None,
+        )
         target = business or (profiles[0] if profiles else None)
         if not target:
             raise WiseConfigError("Wise returned no profiles.")
