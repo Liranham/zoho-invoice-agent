@@ -404,6 +404,27 @@ def cmd_server():
                 _invoice_services.get("amzg"), settings, _gmail_automation
             )
             scheduler.start()
+        else:
+            # Hard guard: Goldman's reminders depend on the daily tick.
+            # If the scheduler isn't enabled, the 4th/10th/19th/25th
+            # firings simply won't happen. Make it loud in the logs.
+            logger.warning(
+                "SCHEDULER_ENABLED is false — Goldman reminders will NOT fire. "
+                "Set SCHEDULER_ENABLED=true and SCHEDULER_RECURRING_CRON=daily:HH:MM."
+            )
+
+        # Catch-up tick: if the process restarted around the daily slot
+        # we might miss the 09:00 firing. Run the reminder tick once now
+        # so any due reminder (next_due_date <= today) fires on boot.
+        try:
+            from goldman.reminders.tick import run_reminder_tick
+            fired = run_reminder_tick()
+            if fired:
+                logger.info("Boot catch-up tick fired %d reminder(s).", fired)
+            else:
+                logger.info("Boot catch-up tick: nothing due.")
+        except Exception as e:
+            logger.exception("Boot catch-up tick crashed: %s", e)
 
         # Goldman Telegram bot (Phase 4)
         if os.environ.get("GOLDMAN_TELEGRAM_BOT_TOKEN"):
