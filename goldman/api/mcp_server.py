@@ -450,7 +450,7 @@ TOOLS = [
                 "days_of_month": {"type": "array",
                                    "items": {"type": "integer"}},
                 "action": {"type": "string",
-                            "enum": ["payroll_reminder", "generic_note"],
+                            "enum": ["payroll_reminder", "payroll_reconciliation", "generic_note"],
                             "default": "generic_note"},
                 "entity_slug": {"type": "string", "enum": ["amzg", "seo"]},
                 "channel_id": {"type": "string"},

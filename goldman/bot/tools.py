@@ -402,7 +402,7 @@ TOOL_SCHEMAS = [
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["payroll_reminder", "generic_note"],
+                    "enum": ["payroll_reminder", "payroll_reconciliation", "generic_note"],
                     "default": "generic_note",
                 },
                 "entity_slug": {"type": "string", "enum": ["amzg", "seo"]},
