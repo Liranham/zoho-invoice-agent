@@ -241,6 +241,55 @@ class HubstaffClient:
             params["status"] = status
         return self._get(f"/organizations/{oid}/projects", params).get("projects", [])
 
+    def team_payments(
+        self, *, start: str, stop: str,
+        org_id: Optional[str] = None,
+        only_complete: bool = True,
+    ) -> list:
+        """Fetch every team-payment record in the window, with per-recipient
+        details flattened so each item is one (user_id, amount, currency)
+        payment. Filters out incomplete payments by default.
+
+        Per-recipient details come from the payment's `details[]` array.
+        """
+        oid = str(org_id or self.org_id)
+        params = {"date[start]": start, "date[stop]": stop, "page_limit": 100}
+        out: list = []
+        while True:
+            data = self._get(
+                f"/organizations/{oid}/team_payments", params,
+            )
+            for p in data.get("team_payments", []) or []:
+                if only_complete and not p.get("payment_complete"):
+                    continue
+                for d in p.get("details", []) or []:
+                    if only_complete and not d.get("payment_complete"):
+                        continue
+                    try:
+                        amount = float(d.get("amount") or 0)
+                    except Exception:
+                        continue
+                    out.append({
+                        "payment_id":     p.get("id"),
+                        "payment_source": p.get("payment_source"),
+                        "gateway":        p.get("payment_gateway"),
+                        "start_date":     p.get("start_date"),
+                        "stop_date":      p.get("stop_date"),
+                        "user_id":        d.get("user_id"),
+                        "amount":         amount,
+                        "currency":       d.get("currency") or p.get("currency") or "USD",
+                        "tracked":        d.get("tracked", 0),
+                        "pay_rate":       d.get("pay_rate"),
+                        "payment_type":   d.get("payment_type"),
+                        "note":           p.get("note") or "",
+                    })
+            pagination = data.get("pagination") or {}
+            next_id = pagination.get("next_page_start_id")
+            if not next_id:
+                break
+            params["page_start_id"] = next_id
+        return out
+
     def daily_activities(
         self, *, start: str, stop: str,
         org_id: Optional[str] = None,

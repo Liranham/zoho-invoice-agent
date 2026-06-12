@@ -286,9 +286,30 @@ def _gmail_wise_outflows(conn, start: date, stop: date) -> list:
     return outflows
 
 
+def _hubstaff_actual_payments(start: date, stop: date) -> list:
+    """Pull the AUTHORITATIVE per-recipient payment records from Hubstaff's
+    own team_payments endpoint. This is Hubstaff's own record of what got
+    paid (gateway, completion status, currency, recipient) — far cleaner
+    than parsing Wise emails."""
+    from goldman.hubstaff.client import HubstaffClient
+    try:
+        client = HubstaffClient()
+    except Exception:
+        return []
+    try:
+        return client.team_payments(
+            start=start.isoformat(), stop=stop.isoformat(),
+            only_complete=True,
+        )
+    except Exception:
+        return []
+
+
 def action_payroll_reconciliation(conn, reminder, today: date) -> str:
-    """Compare the most recent unreconciled prediction against actual
-    Wise outflows from Gmail."""
+    """Compare the most recent unreconciled prediction against Hubstaff's
+    own record of completed team payments. Hubstaff is the SOURCE OF TRUTH
+    for what got paid (it tracks the Wise gateway calls itself), so no
+    email parsing is needed."""
     # 1. Find the unreconciled prediction whose period ended most recently.
     with conn.cursor() as cur:
         cur.execute(
@@ -313,22 +334,51 @@ def action_payroll_reconciliation(conn, reminder, today: date) -> str:
     pred_id, p_start, p_stop, p_total, p_curr = row
     p_total = float(p_total)
 
-    # 2. Look at Wise outflows in the days AFTER the period stop but
-    # before today. Liran pays on the 8th / 23rd, so a 10-day window
-    # comfortably catches the actual movements regardless of timing.
-    from datetime import timedelta
-    window_start = p_stop  # inclusive: payments could happen the same day
-    window_stop  = today
-    outflows = _gmail_wise_outflows(conn, window_start, window_stop)
-    actual_total = sum(o["amount"] for o in outflows)
+    # 2. Pull Hubstaff's completed payments whose period overlaps the
+    # predicted one. Liran pays a few days after period stop, so we look
+    # at Hubstaff payment records whose stop_date is within [p_stop, today].
+    payments = _hubstaff_actual_payments(p_stop, today)
+    # Keep only the payments whose Hubstaff `stop_date` equals our predicted
+    # period stop — that ties each actual payment to the exact period we
+    # predicted (so we don't double-count or pull in an unrelated payment).
+    matching = [p for p in payments
+                 if (p.get("stop_date") or "") == p_stop.isoformat()]
+    actual_total = round(sum(p["amount"] for p in matching), 2)
     delta = round(actual_total - p_total, 2)
-    tolerance = max(5.00, p_total * 0.005)  # ±$5 or ±0.5%, whichever is bigger
+    tolerance = max(5.00, p_total * 0.005)  # ±$5 or ±0.5%
 
-    # 3. Update the prediction row.
+    # 3. Per-VA reconciliation — pinpoint exactly who is off.
+    predicted_by_user = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT breakdown FROM goldman.payroll_predictions WHERE id=%s",
+            (pred_id,),
+        )
+        breakdown = cur.fetchone()[0] or []
+    for line in breakdown:
+        if line.get("amount") is not None:
+            predicted_by_user[line["user_id"]] = {
+                "name": line.get("name", str(line["user_id"])),
+                "predicted": float(line["amount"]),
+                "actual": 0.0,
+            }
+    for p in matching:
+        uid = p["user_id"]
+        rec = predicted_by_user.get(uid)
+        if rec is None:
+            predicted_by_user[uid] = {
+                "name": f"user_{uid}",
+                "predicted": 0.0,
+                "actual": p["amount"],
+            }
+        else:
+            rec["actual"] += p["amount"]
+
+    # 4. Persist the reconciliation result.
     note = (
-        f"Compared on {today.isoformat()}: {len(outflows)} Wise outflows "
-        f"summing ${actual_total:,.2f} {p_curr} vs predicted ${p_total:,.2f} "
-        f"{p_curr}; delta ${delta:+,.2f}."
+        f"Hubstaff team_payments for period_stop={p_stop.isoformat()}: "
+        f"{len(matching)} records summing ${actual_total:,.2f} vs predicted "
+        f"${p_total:,.2f}; delta ${delta:+,.2f}."
     )
     with conn.cursor() as cur:
         cur.execute(
@@ -344,37 +394,48 @@ def action_payroll_reconciliation(conn, reminder, today: date) -> str:
         )
     conn.commit()
 
-    # 4. Build the user-facing message — only loud when there IS a gap.
-    if abs(delta) <= tolerance:
+    # 5. Build the user-facing message — only loud when there IS a gap.
+    if abs(delta) <= tolerance and matching:
         return (
             f"✅ *Reconciliation clean — {reminder.name}*\n"
-            f"Period {p_start.isoformat()} → {p_stop.isoformat()}\n"
+            f"Period **{p_start.isoformat()} → {p_stop.isoformat()}**\n"
             f"Predicted: **${p_total:,.2f} {p_curr}**\n"
-            f"Actual outflow via Wise: **${actual_total:,.2f} {p_curr}** "
-            f"(from {len(outflows)} transfers)\n"
+            f"Hubstaff records: **${actual_total:,.2f} {p_curr}** "
+            f"across {len(matching)} completed payments\n"
             f"Delta: ${delta:+,.2f} — within ±${tolerance:,.2f} tolerance. "
             f"Nothing to do."
         )
-    # Mismatch — show the breakdown.
+
+    # Either mismatch OR no payments found at all.
     lines = [
         f"⚠️ *Reconciliation MISMATCH — {reminder.name}*",
-        f"Period {p_start.isoformat()} → {p_stop.isoformat()}",
+        f"Period **{p_start.isoformat()} → {p_stop.isoformat()}**",
         f"Predicted: **${p_total:,.2f} {p_curr}**",
-        f"Actual Wise outflow: **${actual_total:,.2f} {p_curr}**",
+        f"Hubstaff records: **${actual_total:,.2f} {p_curr}** "
+        f"({len(matching)} completed payments)",
         f"Delta: **${delta:+,.2f}** — outside ±${tolerance:,.2f} tolerance.",
-        "",
-        f"{len(outflows)} Wise outflows found:",
     ]
-    for o in sorted(outflows, key=lambda x: -x["amount"])[:15]:
-        lines.append(
-            f"  • {o['date'][:10]} — {o['recipient'] or '?':30} ${o['amount']:>8,.2f} {o['currency']}"
-        )
+    if not matching:
+        lines.append("")
+        lines.append("⚠️ No completed Hubstaff payments tagged to this period. "
+                     "Either the payments haven't been pushed yet, were paid "
+                     "outside Hubstaff (rate-only Wise transfer), or the "
+                     "period dates don't match what Hubstaff has on file.")
+    else:
+        lines.append("")
+        lines.append("Per-VA breakdown:")
+        rows = sorted(predicted_by_user.values(),
+                       key=lambda r: -abs(r["actual"] - r["predicted"]))
+        for r in rows[:15]:
+            d = r["actual"] - r["predicted"]
+            flag = "✅" if abs(d) <= 1 else "⚠️"
+            lines.append(
+                f"  {flag} {r['name']:28} predicted ${r['predicted']:>8,.2f}  "
+                f"actual ${r['actual']:>8,.2f}  delta ${d:+,.2f}"
+            )
     lines.append("")
-    lines.append(
-        "Please investigate. Common causes: rate changed mid-period, "
-        "a VA missed payment, currency conversion difference, or a "
-        "Wise email Goldman couldn't parse."
-    )
+    lines.append("Please investigate. Common causes: a VA missed payment, "
+                  "rate changed mid-period, FX adjustment on the Wise transfer.")
     return "\n".join(lines)
 
 
