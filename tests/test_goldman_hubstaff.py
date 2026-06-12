@@ -80,7 +80,7 @@ def test_payroll_summary_flags_missing_rates(monkeypatch):
             ctx=ctx, name="payroll_summary",
             arguments={"start": "2026-06-09", "stop": "2026-06-09"},
         )
-    assert "NO RATE ON FILE" in out
+    assert "no rate on file" in out.lower()
     assert "Raquel Uy" in out
     assert "set_member_rate" in out.lower()
 
