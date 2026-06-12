@@ -111,6 +111,15 @@ def _compute_prediction(conn, start: date, stop: date) -> dict:
                               "rate_unit": "hour",
                               "amount": float(amount), "note": ""})
             total += amount
+        elif rate.rate_unit == "half_month":
+            # Fixed amount per half-month pay period. Don't pro-rate by days.
+            amount = Decimal(rate.rate_amount).quantize(Decimal("0.01"))
+            breakdown.append({"user_id": uid, "name": name, "hours": hours,
+                              "rate": float(rate.rate_amount),
+                              "rate_unit": "half_month",
+                              "amount": float(amount),
+                              "note": "fixed per pay period"})
+            total += amount
         elif rate.rate_unit == "month":
             month_days = calendar.monthrange(start.year, start.month)[1]
             amount = (Decimal(rate.rate_amount) * Decimal(period_days)

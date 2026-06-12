@@ -325,7 +325,7 @@ TOOL_SCHEMAS = [
                 "rate_amount": {"type": "number"},
                 "rate_currency": {"type": "string", "default": "USD"},
                 "rate_unit": {"type": "string",
-                              "enum": ["hour", "day", "week", "month"],
+                              "enum": ["hour", "day", "week", "month", "half_month"],
                               "default": "hour"},
                 "notes": {"type": "string"},
             },
@@ -1171,9 +1171,17 @@ def _hubstaff_payroll_summary(ctx, args) -> str:
             lines.append(f"  ⚠️  {name:28} | {t:>6.2f}h | NO RATE ON FILE")
             missing_rates.append((uid, name))
             continue
-        # Only hourly rate is supported in computation for now.
         if rate.rate_unit == "hour":
             pay = round(t * float(rate.rate_amount), 2)
+        elif rate.rate_unit == "half_month":
+            # Fixed per pay-period amount — no hours math.
+            pay = round(float(rate.rate_amount), 2)
+            lines.append(
+                f"  {name:28} | {t:>6.2f}h × half-month "
+                f"= ${pay:>9.2f} {rate.rate_currency} (fixed per pay period)"
+            )
+            grand_total += pay
+            continue
         else:
             lines.append(
                 f"  ⚠️  {name:28} | {t:>6.2f}h | "

@@ -393,7 +393,7 @@ TOOLS = [
                 "rate_amount":      {"type": "number"},
                 "rate_currency":    {"type": "string", "default": "USD"},
                 "rate_unit": {"type": "string",
-                              "enum": ["hour", "day", "week", "month"],
+                              "enum": ["hour", "day", "week", "month", "half_month"],
                               "default": "hour"},
                 "notes": {"type": "string"},
             },
