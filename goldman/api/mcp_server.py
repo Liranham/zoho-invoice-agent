@@ -435,6 +435,56 @@ TOOLS = [
             "required": ["start", "stop"],
         },
     },
+    # ---- Phase 11: real scheduled reminders ----
+    {
+        "name": "set_reminder",
+        "description": (
+            "Schedule a REAL recurring reminder that the 09:00 cron will "
+            "deliver via Telegram. ALWAYS use this — not remember_fact — "
+            "for any recurring obligation. For payroll: action='payroll_reminder'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "days_of_month": {"type": "array",
+                                   "items": {"type": "integer"}},
+                "action": {"type": "string",
+                            "enum": ["payroll_reminder", "generic_note"],
+                            "default": "generic_note"},
+                "entity_slug": {"type": "string", "enum": ["amzg", "seo"]},
+                "channel_id": {"type": "string"},
+                "action_params": {"type": "object"},
+            },
+            "required": ["name", "days_of_month"],
+        },
+    },
+    {
+        "name": "list_reminders",
+        "description": "List Goldman's scheduled reminders.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"active_only": {"type": "boolean", "default": False}},
+        },
+    },
+    {
+        "name": "disable_reminder",
+        "description": "Disable a scheduled reminder by name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "fire_reminder_now",
+        "description": "Manually fire a scheduled reminder now (delivery test).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -582,6 +632,7 @@ def _run_tool(name: str, arguments: dict) -> str:
         "create_expense", "send_invoice", "zoho_audit_trail",
         "list_team_members", "hours_worked", "set_member_rate",
         "payroll_summary", "payroll_anomalies",
+        "set_reminder", "list_reminders", "disable_reminder", "fire_reminder_now",
     }
     if name in AGENT_TOOLS:
         from goldman.bot.tools import ToolContext, execute_tool

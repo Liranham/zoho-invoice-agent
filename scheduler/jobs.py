@@ -62,22 +62,26 @@ class JobScheduler:
             logger.warning("Unrecognized cron format: %s", cron)
 
     def _recurring_job(self):
-        """Check Gmail for new wire transfer emails and create invoices."""
-        logger.info("Daily Gmail check triggered")
+        """Daily 09:00 tick — Gmail wire-transfer watcher + Goldman reminders."""
+        logger.info("Daily scheduler tick triggered")
 
-        if not self.gmail_automation:
-            logger.warning("Gmail automation not configured")
-            return
-
+        # 1. Goldman scheduled reminders (Phase 11).
         try:
-            # Poll recent messages
+            from goldman.reminders.tick import run_reminder_tick
+            fired = run_reminder_tick()
+            logger.info("Goldman reminders fired: %d", fired)
+        except Exception as e:
+            logger.exception("Goldman reminder tick failed: %s", e)
+
+        # 2. Gmail wire-transfer watcher (original Phase 0 behaviour).
+        if not self.gmail_automation:
+            logger.info("Gmail automation not configured — skipping.")
+            return
+        try:
             transfers = self.gmail_automation.watcher.poll_recent_messages(max_results=10)
             logger.info(f"Found {len(transfers)} wire transfer emails")
-
             for transfer in transfers:
-                # Process each transfer (automation handles duplicate checking)
                 self.gmail_automation.process_transfer(transfer)
-
         except Exception as e:
             logger.exception(f"Failed to process Gmail emails: {e}")
 

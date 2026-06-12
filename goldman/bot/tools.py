@@ -372,6 +372,82 @@ TOOL_SCHEMAS = [
             "required": ["start", "stop"],
         },
     },
+    # ---- Phase 11: Real scheduled reminders (NOT memory-only) ----
+    # CRITICAL: saving a 'commitment' fact via remember_fact does NOT cause
+    # anything to happen. To actually have Goldman DM Liran on a schedule,
+    # the set_reminder tool below MUST be called. Without it, no proactive
+    # delivery will ever occur.
+    {
+        "name": "set_reminder",
+        "description": (
+            "Schedule a REAL recurring reminder that the daily 09:00 cron "
+            "will deliver via Telegram. Use whenever Liran says 'remind me "
+            "every X', 'send me a reminder on the Yth', etc. "
+            "ALWAYS use this — not remember_fact — for any recurring "
+            "obligation. After calling, the reply confirms the next-due "
+            "date so Liran can trust the schedule.\n\n"
+            "For payroll reminders covering twice-monthly Pacific Edge "
+            "pay periods, use action='payroll_reminder' — the handler "
+            "auto-computes the right Hubstaff period from today's date "
+            "and includes the full payroll summary in the DM."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "days_of_month": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1, "maximum": 31},
+                    "description": "e.g. [4, 19] for the 4th and 19th of each month",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["payroll_reminder", "generic_note"],
+                    "default": "generic_note",
+                },
+                "entity_slug": {"type": "string", "enum": ["amzg", "seo"]},
+                "channel_id": {"type": "string",
+                                "description": "Telegram chat id — defaults to the current chat if calling from Telegram."},
+                "action_params": {
+                    "type": "object",
+                    "description": "For generic_note: {\"note\": \"...\"}. For payroll_reminder: empty.",
+                },
+            },
+            "required": ["name", "days_of_month"],
+        },
+    },
+    {
+        "name": "list_reminders",
+        "description": "List Goldman's scheduled reminders. Active rows show next-due date and last-fired timestamp.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "active_only": {"type": "boolean", "default": False},
+            },
+        },
+    },
+    {
+        "name": "disable_reminder",
+        "description": "Disable a scheduled reminder by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "fire_reminder_now",
+        "description": (
+            "Manually fire a scheduled reminder right now (delivery test). "
+            "Useful to verify the message format + Telegram delivery without "
+            "waiting for the next scheduled day."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -437,6 +513,15 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _hubstaff_payroll_summary(ctx, arguments)
     if name == "payroll_anomalies":
         return _hubstaff_payroll_anomalies(ctx, arguments)
+    # Phase 11: scheduled reminders
+    if name == "set_reminder":
+        return _set_reminder(ctx, arguments)
+    if name == "list_reminders":
+        return _list_reminders(ctx, arguments)
+    if name == "disable_reminder":
+        return _disable_reminder(ctx, arguments)
+    if name == "fire_reminder_now":
+        return _fire_reminder_now(ctx, arguments)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -1165,3 +1250,114 @@ def _hubstaff_payroll_anomalies(ctx, args) -> str:
     _hs_log(ctx, tool_name="payroll_anomalies", args=args,
             status="executed", result_summary=f"{flagged} flagged")
     return "\n".join(lines)
+
+
+# =====================================================================
+# Phase 11 — Scheduled reminders (real, not memory-only)
+# =====================================================================
+
+def _set_reminder(ctx, args) -> str:
+    """Create or update a recurring reminder. Returns the actual saved row."""
+    from goldman.reminders.repository import ReminderRepository
+    name = (args.get("name") or "").strip()
+    days = args.get("days_of_month") or []
+    action = (args.get("action") or "generic_note").strip()
+    channel_id = (args.get("channel_id") or "").strip() or (ctx.chat_id or "")
+    entity_slug = args.get("entity_slug")
+    action_params = args.get("action_params") or {}
+
+    if not name:
+        return "set_reminder error: name is required."
+    if not isinstance(days, list) or not days:
+        return "set_reminder error: days_of_month must be a non-empty list of integers."
+    try:
+        days = [int(d) for d in days if 1 <= int(d) <= 31]
+    except Exception:
+        return "set_reminder error: every day_of_month must be 1..31."
+    if not channel_id:
+        return ("set_reminder error: channel_id (Telegram chat id) is required. "
+                "I don't have your chat_id in this context — please pass it explicitly.")
+
+    if action == "generic_note" and not action_params.get("note"):
+        action_params = {**action_params, "note": name}
+
+    try:
+        repo = ReminderRepository(ctx.conn)
+        r = repo.upsert_by_name(
+            name=name, days_of_month=days, action=action,
+            channel_id=channel_id, channel="telegram",
+            entity_slug=entity_slug, action_params=action_params,
+        )
+        ctx.conn.commit()
+    except Exception as e:
+        return f"set_reminder failed: {e}"
+
+    days_str = ", ".join(str(d) for d in r.days_of_month)
+    return (
+        f"✅ Reminder SCHEDULED (this is a real cron, not just a memory note).\n"
+        f"  Name:        {r.name}\n"
+        f"  Fires on:    days {days_str} of each month (09:00 UTC)\n"
+        f"  Action:      {r.action}\n"
+        f"  Channel:     {r.channel} chat_id={r.channel_id}\n"
+        f"  Next due:    {r.next_due_date.isoformat()}\n"
+        f"  ID:          {r.id}\n"
+        f"To cancel: disable_reminder name={r.name!r}."
+    )
+
+
+def _list_reminders(ctx, args) -> str:
+    from goldman.reminders.repository import ReminderRepository
+    active_only = bool(args.get("active_only", False))
+    rs = ReminderRepository(ctx.conn).list_all(active_only=active_only)
+    if not rs:
+        return "No reminders set." + ("" if active_only else " (And none disabled.)")
+    lines = [f"{len(rs)} reminder(s):"]
+    for r in rs:
+        status = "✅ active" if r.active else "⏸️ disabled"
+        days_str = "/".join(str(d) for d in r.days_of_month)
+        last = r.last_fired_at.strftime("%Y-%m-%d %H:%M") if r.last_fired_at else "(never)"
+        lines.append(
+            f"  {status} | days {days_str} | next {r.next_due_date.isoformat()} | "
+            f"last fired {last} | {r.action} | {r.name}"
+        )
+    return "\n".join(lines)
+
+
+def _disable_reminder(ctx, args) -> str:
+    from goldman.reminders.repository import ReminderRepository
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "disable_reminder error: name is required."
+    repo = ReminderRepository(ctx.conn)
+    matches = [r for r in repo.list_all() if r.name.lower() == name.lower()]
+    if not matches:
+        return f"No reminder named {name!r}."
+    for r in matches:
+        repo.disable(r.id)
+    ctx.conn.commit()
+    return f"Disabled {len(matches)} reminder(s) named {name!r}."
+
+
+def _fire_reminder_now(ctx, args) -> str:
+    """Manual trigger — runs the action handler and delivers via Telegram.
+    Useful to test that a configured reminder will work without waiting
+    until the scheduled day."""
+    from goldman.reminders.repository import ReminderRepository
+    from goldman.reminders.actions import run_action
+    from goldman.reminders.tick import _deliver_telegram
+    from datetime import date as _date
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "fire_reminder_now error: name is required."
+    repo = ReminderRepository(ctx.conn)
+    matches = [r for r in repo.list_all() if r.name.lower() == name.lower()]
+    if not matches:
+        return f"No reminder named {name!r}."
+    r = matches[0]
+    text = run_action(ctx.conn, r, _date.today())
+    delivered = False
+    if r.channel == "telegram":
+        delivered = _deliver_telegram(r.channel_id, text)
+    return ("✓ Fired and delivered." if delivered
+            else "✗ Generated message but Telegram delivery failed.") + \
+           f"\nPreview (first 800 chars):\n{text[:800]}"
