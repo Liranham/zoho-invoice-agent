@@ -64,3 +64,22 @@ def test_entity_from_text_matches_bare_slug():
 def test_entity_from_text_none_when_unnamed():
     assert _entity_from_text("save it to drive please", _entities()) is None
     assert _entity_from_text("", _entities()) is None
+
+
+# --- Attachments are context, not dead-drops: question detection ----------
+from goldman.bot.handlers import _looks_like_question  # noqa: E402
+
+
+def test_looks_like_question_detects_real_questions():
+    # The exact phrasings from the frustrating real chat.
+    assert _looks_like_question("What do you make of it?")
+    assert _looks_like_question("what do you understand we need to do")
+    assert _looks_like_question("Do you understand what we need to do in the zoho books?")
+    assert _looks_like_question("can you review this statement")
+
+
+def test_looks_like_question_ignores_bare_labels():
+    # Just naming the company is NOT a question — only file it.
+    assert not _looks_like_question("pacific edge")
+    assert not _looks_like_question("AMZ-Expert Global")
+    assert not _looks_like_question("")

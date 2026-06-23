@@ -49,6 +49,31 @@ logger = logging.getLogger(__name__)
 _PENDING_DOCS: dict[int, dict] = {}
 _PENDING_TTL_SECONDS = 15 * 60
 
+# The last file we successfully read for a chat, kept briefly so a follow-up
+# question ("what do you make of it?") is answered against the file instead of
+# being treated as an unrelated message. {chat_id: {filename, text, ts, consumed}}
+_RECENT_DOCS: dict[int, dict] = {}
+
+_QUESTION_HINTS = (
+    "what", "how", "why", "should", "do you", "can you", "explain",
+    "understand", "make of", "review", "analy", "zoho", "summar",
+    "tell me", "is it", "are these", "advice", "think", "mean", "need to",
+)
+
+
+def _looks_like_question(text: str) -> bool:
+    """True if the text is a real question/instruction rather than a bare label
+    (like just a company name). Used to decide whether an attached file should
+    be answered, not merely filed."""
+    if not text:
+        return False
+    t = text.strip().lower()
+    if "?" in t:
+        return True
+    if any(k in t for k in _QUESTION_HINTS):
+        return True
+    return len(t.split()) > 4
+
 
 def _entity_from_text(text: str, entities: list):
     """Best-effort: figure out which entity the user named in free text.
@@ -221,12 +246,40 @@ async def _intake_general_document(*, update, tmp_path, original_filename,
             drive_category=category,
         )
 
-    await _reply_html(
-        msg,
-        f"Filed **{original_filename}** under "
-        f"**{ent.legal_name} / {category}**\n"
-        f"Indexed {result.chunk_count} chunk(s). Ask me anything about it.",
+    # Pull the file's text so we can (a) answer a question asked with it, and
+    # (b) keep it on hand for an immediate follow-up question.
+    doc_text = ""
+    try:
+        import mimetypes
+        from goldman.documents import _read_text
+        mt, _ = mimetypes.guess_type(target.name)
+        doc_text = _read_text(target, mt or "application/octet-stream") or ""
+    except Exception:
+        logger.exception("Could not extract text from %s", target)
+
+    _RECENT_DOCS[update.effective_chat.id] = {
+        "filename": original_filename, "text": doc_text,
+        "ts": time.time(), "consumed": False,
+    }
+
+    filed_line = (
+        f"📁 Filed **{original_filename}** under "
+        f"**{ent.legal_name} / {category}** "
+        f"({result.chunk_count} chunk(s) indexed)."
     )
+
+    # If the user attached the file AND asked something, ANSWER it — don't just
+    # file and walk away. This is the whole point: a file is context for the
+    # conversation, not a dead-drop.
+    if _looks_like_question(caption) and doc_text.strip():
+        _RECENT_DOCS[update.effective_chat.id]["consumed"] = True
+        await _reply_html(msg, filed_line)
+        await _run_goldman_reply(
+            update, update.effective_chat.id, llm, caption,
+            doc_context={"filename": original_filename, "text": doc_text},
+        )
+    else:
+        await _reply_html(msg, filed_line + "\n\nAsk me anything about it.")
 
 
 GOLDMAN_PERSONA = """\
@@ -235,6 +288,17 @@ and Pacific Edge Outsourcing LLC (US Wyoming subsidiary). You speak in
 clear plain English, no jargon. You are conservative, precise, and never
 fabricate. When you don't know, you say so. When you act, you cite the
 source (which Zoho org, which document, which prior conversation).
+
+BIAS TO ACTION (read this — Liran gets frustrated by over-asking):
+- When Liran sends a file or screenshot and asks "what do you make of it?"
+  or "what do we need to do?", READ it and give him a direct, substantive
+  answer with the actual figures/points — do NOT just say "Filed ✅" or ask
+  which company before engaging with the content.
+- Do the obvious work without asking permission for each step. Only ask a
+  clarifying question when the answer genuinely changes what you'd do AND
+  you can't reasonably infer it. Don't ask "should I go through the full
+  statement?" — just go through it and report.
+- Answer the question that was asked first; offer next steps after.
 
 EXPLICIT INSTRUCTIONS ARE HARD FACTS (read this — past failure here):
 - When Liran states an explicit rule about how someone is paid ("Raquel
@@ -355,6 +419,71 @@ def _session_id_for_today(chat_id: int) -> str:
     return f"tg-{chat_id}-{datetime.utcnow().strftime('%Y%m%d')}"
 
 
+async def _run_goldman_reply(update, chat_id, llm, user_text, doc_context=None):
+    """Run Goldman's agent loop for one user message and send the reply.
+
+    doc_context: optional {"filename", "text"}. When present, the file's
+    contents are injected into THIS turn so Goldman answers against the file.
+    The conversation history stores only the clean user_text — the file stays
+    in memory/Drive and is recallable later — so we don't bloat every turn.
+    """
+    session_id = _session_id_for_today(chat_id)
+    with app_conn() as conn:
+        bot_sessions = BotSessionRepository(conn)
+        sess = bot_sessions.get_or_create(
+            front_door="telegram", chat_id=str(chat_id),
+            default_entity="amzg", session_id=session_id,
+        )
+        entity_slug = sess.current_entity or "amzg"
+
+        turns = ConversationTurnRepository(conn)
+        ent = EntityRepository(conn).get_by_slug(entity_slug) if entity_slug else None
+        entity_id = ent.id if ent else None
+
+        turns.insert(
+            entity_id=entity_id, session_id=sess.session_id,
+            front_door="telegram", role="user", text=user_text,
+        )
+
+        recent = turns.list_by_session(sess.session_id)[-10:]
+        messages = []
+        for t in recent:
+            if t.role == "user":
+                messages.append({"role": "user", "content": t.text})
+            elif t.role == "assistant":
+                messages.append({"role": "assistant", "content": t.text})
+
+        # Inject the attached file's contents into THIS turn only.
+        if doc_context and messages and messages[-1]["role"] == "user":
+            messages[-1]["content"] = (
+                f"[The user attached a file named \"{doc_context['filename']}\". "
+                f"Its full contents are between the markers below. Read it and "
+                f"answer their message using it — don't just acknowledge it.]\n\n"
+                f"<<<FILE>>>\n{doc_context['text']}\n<<<END FILE>>>\n\n"
+                f"The user's message: "
+                f"{user_text or '(no caption — tell me what this is and what I should do about it.)'}"
+            )
+
+        ctx = ToolContext(
+            conn=conn, entity_slug=entity_slug,
+            chat_id=str(chat_id), embedder=None,
+            bot_session_repo=bot_sessions,
+        )
+
+        reply = run_agent(
+            claude=llm._client, model=llm.model,
+            system=GOLDMAN_PERSONA, messages=messages, ctx=ctx,
+        )
+
+        turns.insert(
+            entity_id=entity_id, session_id=sess.session_id,
+            front_door="telegram", role="assistant", text=reply,
+        )
+        bot_sessions.touch("telegram", str(chat_id))
+
+    await _reply_html(update.message, reply or "(empty reply)")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     if not is_allowed_chat(chat_id):
@@ -362,8 +491,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_text = update.message.text or ""
-    session_id = _session_id_for_today(chat_id)
-
     llm = GoldmanLLM()
 
     # Cross-message context: if the user just uploaded a file we couldn't
@@ -390,54 +517,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Expired — forget it so we don't file something the user moved on from.
         _PENDING_DOCS.pop(chat_id, None)
 
-    embedder = None  # Anthropic-only build — keyword_recall replaces embeddings.
+    # Recent-attachment context: a file was just uploaded — answer this question
+    # against it (once), then let it go so we don't re-inject it every turn.
+    doc_context = None
+    rec = _RECENT_DOCS.get(chat_id)
+    if rec and (time.time() - rec["ts"] < _PENDING_TTL_SECONDS):
+        if not rec.get("consumed") and rec.get("text", "").strip():
+            doc_context = {"filename": rec["filename"], "text": rec["text"]}
+            rec["consumed"] = True
+    elif rec:
+        _RECENT_DOCS.pop(chat_id, None)
 
-    with app_conn() as conn:
-        bot_sessions = BotSessionRepository(conn)
-        sess = bot_sessions.get_or_create(
-            front_door="telegram",
-            chat_id=str(chat_id),
-            default_entity="amzg",
-            session_id=session_id,
-        )
-        entity_slug = sess.current_entity or "amzg"
-
-        turns = ConversationTurnRepository(conn)
-        entity_id = None
-        ent = EntityRepository(conn).get_by_slug(entity_slug) if entity_slug else None
-        if ent:
-            entity_id = ent.id
-        turns.insert(
-            entity_id=entity_id, session_id=sess.session_id,
-            front_door="telegram", role="user", text=user_text,
-        )
-
-        recent = turns.list_by_session(sess.session_id)[-10:]
-        messages = []
-        for t in recent:
-            if t.role == "user":
-                messages.append({"role": "user", "content": t.text})
-            elif t.role == "assistant":
-                messages.append({"role": "assistant", "content": t.text})
-
-        ctx = ToolContext(
-            conn=conn, entity_slug=entity_slug,
-            chat_id=str(chat_id), embedder=embedder,
-            bot_session_repo=bot_sessions,
-        )
-
-        reply = run_agent(
-            claude=llm._client, model=llm.model,
-            system=GOLDMAN_PERSONA, messages=messages, ctx=ctx,
-        )
-
-        turns.insert(
-            entity_id=entity_id, session_id=sess.session_id,
-            front_door="telegram", role="assistant", text=reply,
-        )
-        bot_sessions.touch("telegram", str(chat_id))
-
-    await _reply_html(update.message, reply or "(empty reply)")
+    await _run_goldman_reply(update, chat_id, llm, user_text, doc_context=doc_context)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
