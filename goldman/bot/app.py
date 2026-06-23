@@ -25,6 +25,27 @@ async def _start(update, context):
     )
 
 
+async def _on_error(update, context):
+    """Global safety net: never let an unhandled exception leave Goldman
+    silent. Log the full traceback, then tell the user something went wrong
+    so they know to retry instead of staring at a dead chat."""
+    logger.exception("Unhandled error while processing update", exc_info=context.error)
+    try:
+        chat = getattr(update, "effective_chat", None)
+        if chat is not None:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=(
+                    "⚠️ I hit an error handling that and couldn't finish a "
+                    "reply. If it was a screenshot or file, try sending the "
+                    "text directly — and let Liran know if it keeps happening."
+                ),
+            )
+    except Exception:
+        # If even the apology fails, the log above is our record.
+        pass
+
+
 def run_bot():
     """Start the bot (blocking)."""
     token = os.getenv("GOLDMAN_TELEGRAM_BOT_TOKEN", "")
@@ -42,6 +63,7 @@ def run_bot():
     app.add_handler(MessageHandler(filters.PHOTO, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_error_handler(_on_error)
 
     logger.info("Goldman bot starting - long-polling...")
     if in_thread:

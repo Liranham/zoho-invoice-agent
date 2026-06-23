@@ -33,6 +33,30 @@ def extract_text_from_pdf(file_path: Path) -> str:
     return "\n\n".join(pages).strip()
 
 
+def _sniff_mime(file_path: Path) -> Optional[str]:
+    """Detect the real file type from its magic bytes, ignoring the filename.
+
+    Telegram photos arrive with no filename, and our intake sometimes names
+    them 'document.pdf' — so an extension is not trustworthy. Reading the
+    first few bytes is. Returns a mime string for the types we know how to
+    handle, or None when we can't tell (caller falls back to the extension).
+    """
+    try:
+        head = file_path.read_bytes()[:8]
+    except Exception:
+        return None
+    if head[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if head[:4] == b"%PDF":
+        return "application/pdf"
+    if head[:2] == b"PK":
+        # docx/xlsx are zip containers; defer to the extension to disambiguate.
+        return None
+    return None
+
+
 def extract_text_from_docx(file_path: Path) -> str:
     """Pull paragraphs + table cell text out of a .docx."""
     from docx import Document
@@ -65,12 +89,25 @@ VISION_OCR_MIN_CHARS = 50  # threshold below which we fall back to vision OCR
 
 
 def _read_text(file_path: Path, mime_type: str) -> str:
+    # Trust the file's actual bytes over its (possibly wrong) extension.
+    # A screenshot sent through Telegram can reach here named 'document.pdf';
+    # without this, pypdf would choke on JPEG data and crash the whole reply.
+    sniffed = _sniff_mime(file_path)
+    if sniffed:
+        mime_type = sniffed
     if mime_type == "application/pdf":
-        text = extract_text_from_pdf(file_path)
+        from goldman.llm import vision_extract_text
+        try:
+            text = extract_text_from_pdf(file_path)
+        except Exception:
+            # Corrupt / truncated / not-really-a-PDF — OCR it instead of dying.
+            text = ""
         if len(text.strip()) < VISION_OCR_MIN_CHARS:
-            # Image-only / scanned PDF — fall back to Claude vision OCR.
-            from goldman.llm import vision_extract_text
-            text = vision_extract_text(file_path=file_path)
+            # Image-only / scanned / unreadable PDF — fall back to vision OCR.
+            try:
+                text = vision_extract_text(file_path=file_path) or text
+            except Exception:
+                pass
         return text
     suffix = file_path.suffix.lower()
     if suffix == ".docx" or mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":

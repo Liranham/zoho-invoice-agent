@@ -411,7 +411,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # doc content, then ingest + mirror to Drive.
         await _intake_general_document(
             update=update, tmp_path=tmp.name,
-            original_filename=getattr(doc, "file_name", "document.pdf"),
+            original_filename=getattr(doc, "file_name", None) or f"telegram-upload{suffix}",
             entities=entities, llm=llm,
         )
         return
