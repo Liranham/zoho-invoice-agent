@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -40,7 +42,48 @@ async def _reply_html(message, text: str, **kwargs):
 logger = logging.getLogger(__name__)
 
 
-def _classify_entity(*, tmp_path: str, entities: list, llm) -> tuple:
+# A document we received but couldn't auto-file, kept briefly per chat so a
+# follow-up message ("it's Pacific Edge, save it to Drive") can be linked back
+# to the file the user just uploaded. In-memory is fine: single bot instance,
+# and a lost pending doc after a restart just means the user re-sends.
+_PENDING_DOCS: dict[int, dict] = {}
+_PENDING_TTL_SECONDS = 15 * 60
+
+
+def _entity_from_text(text: str, entities: list):
+    """Best-effort: figure out which entity the user named in free text.
+
+    Matches on the entity slug ('amzg'/'seo'), the full legal name, or any
+    two consecutive distinctive words of the legal name (so "Pacific Edge"
+    resolves to Pacific Edge Outsourcing LLC). Returns a slug or None.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    # Explicit nicknames the user actually uses for each company.
+    aliases = {
+        "seo": ["pacific edge", "pacific-edge", "peo", "us llc", "wyoming"],
+        "amzg": ["amz-expert global", "amz expert global", "amzg", "hong kong", "hk company"],
+    }
+    for e in entities:
+        if not e.slug:
+            continue
+        if e.slug.lower() in low:
+            return e.slug
+        for alias in aliases.get(e.slug.lower(), []):
+            if alias in low:
+                return e.slug
+        name = (e.legal_name or "").lower()
+        if name and name in low:
+            return e.slug
+        words = [w for w in re.split(r"[^a-z0-9]+", name) if len(w) > 2]
+        for i in range(len(words) - 1):
+            if f"{words[i]} {words[i + 1]}" in low:
+                return e.slug
+    return None
+
+
+def _classify_entity(*, tmp_path: str, entities: list, llm, hint: str = "") -> tuple:
     """Ask Claude to pick which entity a non-bill document belongs to.
 
     Returns (entity_slug, category, confidence). entity_slug may be None
@@ -65,12 +108,18 @@ def _classify_entity(*, tmp_path: str, entities: list, llm) -> tuple:
         "required": ["entity_slug", "category"],
     }
     legal_names = "; ".join(f"{e.slug}={e.legal_name}" for e in entities)
+    hint_line = (
+        f" The user said this when sending the file: \"{hint.strip()}\". "
+        f"Trust that strongly when deciding the company."
+        if hint and hint.strip() else ""
+    )
     system = (
         f"You read a document and decide which company it belongs to. "
-        f"Companies: {legal_names}. If you cannot tell with high confidence, "
-        f"return 'unknown'. Pick a sensible category: Tax for filings/IRS/"
-        f"HKIRD letters, Statements for bank/Stripe/Wise statements, "
-        f"Contracts for signed agreements, Documents for everything else."
+        f"Companies: {legal_names}.{hint_line} If you cannot tell with high "
+        f"confidence, return 'unknown'. Pick a sensible category: Tax for "
+        f"filings/IRS/HKIRD letters, Statements for bank/Stripe/Wise "
+        f"statements, Contracts for signed agreements, Documents for "
+        f"everything else."
     )
     try:
         result = llm.extract_from_document(
@@ -88,20 +137,45 @@ def _classify_entity(*, tmp_path: str, entities: list, llm) -> tuple:
 
 
 async def _intake_general_document(*, update, tmp_path, original_filename,
-                                    entities, llm) -> None:
-    """Ingest a non-bill document: classify entity, upload to memory + Drive."""
+                                    entities, llm, caption: str = "",
+                                    force_entity_slug=None) -> None:
+    """Ingest a non-bill document: classify entity, upload to memory + Drive.
+
+    caption           — any text the user sent with the file (Telegram caption
+                        or a follow-up message); used to identify the company.
+    force_entity_slug — caller already knows the company (e.g. the user just
+                        named it in a reply); skip guessing.
+    """
     msg = update.message
-    entity_slug, category, _ = _classify_entity(
-        tmp_path=tmp_path, entities=entities, llm=llm,
+    # Identify the company in priority order: explicit caller > what the user
+    # typed > reading the file itself.
+    classified_slug, category, _ = _classify_entity(
+        tmp_path=tmp_path, entities=entities, llm=llm, hint=caption,
+    )
+    entity_slug = (
+        force_entity_slug
+        or _entity_from_text(caption, entities)
+        or classified_slug
     )
 
     if entity_slug is None:
+        # Hold the file so a follow-up ("it's Pacific Edge") can finish the job.
+        _PENDING_DOCS[update.effective_chat.id] = {
+            "tmp_path": tmp_path,
+            "original_filename": original_filename,
+            "caption": caption,
+            "ts": time.time(),
+        }
         await _reply_html(
             msg,
-            f"Got **{original_filename}** — couldn't tell which company "
-            f"it's for. Reply with the company name and I'll file it.",
+            f"Got **{original_filename}** — I couldn't tell which company "
+            f"it's for. Just reply with the company name (e.g. **Pacific "
+            f"Edge** or **AMZ-Expert Global**) and I'll file it.",
         )
         return
+
+    # Filing now — drop any stale pending entry for this chat.
+    _PENDING_DOCS.pop(update.effective_chat.id, None)
 
     ent = next(e for e in entities if e.slug == entity_slug)
 
@@ -290,9 +364,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_text = update.message.text or ""
     session_id = _session_id_for_today(chat_id)
 
-    embedder = None  # Anthropic-only build — keyword_recall replaces embeddings.
-
     llm = GoldmanLLM()
+
+    # Cross-message context: if the user just uploaded a file we couldn't
+    # auto-file and now names the company (or says "save it"), link this reply
+    # to that file and finish the job — instead of treating the two messages
+    # as unrelated.
+    pending = _PENDING_DOCS.get(chat_id)
+    if pending and (time.time() - pending["ts"] < _PENDING_TTL_SECONDS):
+        with app_conn() as conn:
+            entities = EntityRepository(conn).list_all()
+        slug = _entity_from_text(user_text, entities)
+        if slug:
+            _PENDING_DOCS.pop(chat_id, None)
+            await _intake_general_document(
+                update=update,
+                tmp_path=pending["tmp_path"],
+                original_filename=pending["original_filename"],
+                entities=entities, llm=llm,
+                caption=f"{pending.get('caption', '')} {user_text}".strip(),
+                force_entity_slug=slug,
+            )
+            return
+    elif pending:
+        # Expired — forget it so we don't file something the user moved on from.
+        _PENDING_DOCS.pop(chat_id, None)
+
+    embedder = None  # Anthropic-only build — keyword_recall replaces embeddings.
 
     with app_conn() as conn:
         bot_sessions = BotSessionRepository(conn)
@@ -354,6 +452,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.reply_text("Send me a PDF or photo of a bill.")
         return
 
+    caption = (msg.caption or "").strip()
+
     file_obj = await context.bot.get_file(doc.file_id)
     import tempfile
     import os as _os
@@ -394,7 +494,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _intake_general_document(
             update=update, tmp_path=tmp.name,
             original_filename=getattr(doc, "file_name", None) or f"telegram-upload{suffix}",
-            entities=entities, llm=llm,
+            entities=entities, llm=llm, caption=caption,
         )
         return
 
@@ -412,7 +512,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await _intake_general_document(
             update=update, tmp_path=tmp.name,
             original_filename=getattr(doc, "file_name", None) or f"telegram-upload{suffix}",
-            entities=entities, llm=llm,
+            entities=entities, llm=llm, caption=caption,
         )
         return
 

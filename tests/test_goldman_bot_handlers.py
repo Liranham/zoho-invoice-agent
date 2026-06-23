@@ -29,3 +29,38 @@ def test_goldman_persona_mentions_recall_decisions_tool():
     from goldman.bot.handlers import GOLDMAN_PERSONA
     assert "recall_decisions" in GOLDMAN_PERSONA
     assert "decide" in GOLDMAN_PERSONA.lower()
+
+
+# --- Context understanding: identify the company from what the user typed ---
+from types import SimpleNamespace  # noqa: E402
+
+from goldman.bot.handlers import _entity_from_text  # noqa: E402
+
+
+def _entities():
+    return [
+        SimpleNamespace(slug="amzg", legal_name="AMZ-Expert Global Limited"),
+        SimpleNamespace(slug="seo", legal_name="Pacific Edge Outsourcing LLC"),
+    ]
+
+
+def test_entity_from_text_matches_pacific_edge_nickname():
+    # The exact phrasing from the real chat that used to be ignored.
+    txt = "This is the 2025 Pacific edge LLC wise statement please save it on drive"
+    assert _entity_from_text(txt, _entities()) == "seo"
+
+
+def test_entity_from_text_matches_full_and_partial_names():
+    ents = _entities()
+    assert _entity_from_text("file this under AMZ-Expert Global please", ents) == "amzg"
+    assert _entity_from_text("pacific edge", ents) == "seo"
+    assert _entity_from_text("it's for the HK company", ents) == "amzg"
+
+
+def test_entity_from_text_matches_bare_slug():
+    assert _entity_from_text("put it on seo", _entities()) == "seo"
+
+
+def test_entity_from_text_none_when_unnamed():
+    assert _entity_from_text("save it to drive please", _entities()) is None
+    assert _entity_from_text("", _entities()) is None

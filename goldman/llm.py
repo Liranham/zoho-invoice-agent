@@ -124,8 +124,18 @@ def _document_extract_with_tool(client, model, max_tokens, document_path,
             "source": {"type": "base64", "media_type": mime, "data": b64},
         }
     else:
+        # Spreadsheets (.xlsx), Word docs (.docx), CSV, plain text, etc.
+        # An .xlsx is a binary zip — read_text() on it yields gibberish, which
+        # is why Goldman used to say "I only see metadata" and couldn't tell
+        # which company a Wise statement belonged to. Route through the real
+        # extractors so Claude sees the actual cell/paragraph contents.
+        try:
+            from goldman.documents import _read_text
+            extracted = _read_text(path, mime)
+        except Exception:
+            extracted = ""
         doc_block = {"type": "text",
-                     "text": path.read_text(errors="replace")}
+                     "text": extracted or path.read_text(errors="replace")}
 
     response = client.messages.create(
         model=model,
