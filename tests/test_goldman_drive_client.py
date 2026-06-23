@@ -77,3 +77,38 @@ def test_upload_file_calls_drive_api():
 
         assert result["file_id"] == "file_xyz"
         assert "drive.google.com" in result["url"]
+
+
+def test_list_sheet_tabs_returns_titles():
+    c = GoogleDriveClient.__new__(GoogleDriveClient)
+    c._sheets = MagicMock()
+    c._sheets.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "sheets": [
+            {"properties": {"title": "May26"}},
+            {"properties": {"title": "June26"}},
+        ]
+    }
+    assert c.list_sheet_tabs(file_id="s1") == ["May26", "June26"]
+
+
+def test_read_sheet_values_uses_tab_range_and_caps_rows():
+    c = GoogleDriveClient.__new__(GoogleDriveClient)
+    c._sheets = MagicMock()
+    values_get = c._sheets.spreadsheets.return_value.values.return_value.get
+    values_get.return_value.execute.return_value = {
+        "values": [["a", "1"], ["b", "2"], ["c", "3"]]
+    }
+    rows = c.read_sheet_values(file_id="s1", tab="June26", max_rows=2)
+    assert rows == [["a", "1"], ["b", "2"]]
+    assert values_get.call_args.kwargs["range"] == "'June26'"
+
+
+def test_export_text_decodes_bytes():
+    with patch("goldman.drive.client.build"):
+        c = GoogleDriveClient.__new__(GoogleDriveClient)
+        c._service = MagicMock()
+        c._service.files.return_value.export.return_value.execute.return_value = (
+            b"Hello offsets"
+        )
+        out = c.export_text(file_id="doc1")
+        assert out == "Hello offsets"

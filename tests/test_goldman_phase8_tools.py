@@ -102,3 +102,67 @@ def test_list_drive_folder_uses_drive_client(monkeypatch):
         out = execute_tool(ctx=ctx, name="list_drive_folder", arguments={})
     assert "Pacific Edge" in out
     assert "BR.pdf" in out
+
+
+def _sheet_client(tabs, rows):
+    fake = MagicMock()
+    fake.get_file_metadata.return_value = {
+        "name": "Kizuzim",
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+    }
+    fake.list_sheet_tabs.return_value = tabs
+    fake.read_sheet_values.return_value = rows
+    return fake
+
+
+def test_read_drive_file_reads_named_sheet_tab():
+    rows = [["Month", "Liran", "Gilad"], ["June26", "1000", "800"]]
+    fake = _sheet_client(["May26", "June26"], rows)
+    with patch("goldman.bot.tools._drive_client", return_value=(fake, "root")):
+        out = execute_tool(ctx=MagicMock(), name="read_drive_file",
+                           arguments={"file_id": "sheet1", "tab": "June26"})
+    fake.read_sheet_values.assert_called_once_with(file_id="sheet1", tab="June26")
+    assert "June26" in out
+    assert "1000" in out and "800" in out
+
+
+def test_read_drive_file_sheet_tab_is_case_insensitive():
+    fake = _sheet_client(["June26"], [["x", "1"]])
+    with patch("goldman.bot.tools._drive_client", return_value=(fake, "root")):
+        out = execute_tool(ctx=MagicMock(), name="read_drive_file",
+                           arguments={"file_id": "s", "tab": "june26"})
+    # Matched 'June26' despite lowercase request.
+    fake.read_sheet_values.assert_called_once_with(file_id="s", tab="June26")
+    assert "June26" in out
+
+
+def test_read_drive_file_unknown_tab_lists_available():
+    fake = _sheet_client(["May26", "June26"], [])
+    with patch("goldman.bot.tools._drive_client", return_value=(fake, "root")):
+        out = execute_tool(ctx=MagicMock(), name="read_drive_file",
+                           arguments={"file_id": "s", "tab": "July26"})
+    fake.read_sheet_values.assert_not_called()
+    assert "May26" in out and "June26" in out
+
+
+def test_read_drive_file_no_tab_lists_tabs_and_reads_first():
+    fake = _sheet_client(["May26", "June26"], [["header"]])
+    with patch("goldman.bot.tools._drive_client", return_value=(fake, "root")):
+        out = execute_tool(ctx=MagicMock(), name="read_drive_file",
+                           arguments={"file_id": "s"})
+    fake.read_sheet_values.assert_called_once_with(file_id="s", tab="May26")
+    assert "May26" in out and "June26" in out
+
+
+def test_read_drive_file_exports_google_doc_text():
+    fake = MagicMock()
+    fake.get_file_metadata.return_value = {
+        "name": "Meeting Notes",
+        "mimeType": "application/vnd.google-apps.document",
+    }
+    fake.export_text.return_value = "Discussed the June offsets."
+    with patch("goldman.bot.tools._drive_client", return_value=(fake, "root")):
+        out = execute_tool(ctx=MagicMock(), name="read_drive_file",
+                           arguments={"file_id": "doc1"})
+    fake.export_text.assert_called_once_with(file_id="doc1", mime="text/plain")
+    assert "Discussed the June offsets." in out

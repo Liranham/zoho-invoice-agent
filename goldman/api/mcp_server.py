@@ -229,10 +229,21 @@ TOOLS = [
     },
     {
         "name": "read_drive_file",
-        "description": "Read the contents of a Drive file Goldman uploaded.",
+        "description": (
+            "Read the contents of any Drive file Liran can access — text "
+            "files, Google Docs, and Google Sheets (cell values). For a "
+            "Google Sheet, pass `tab` to read a specific worksheet by name; "
+            "omit it to list tabs + read the first one."
+        ),
         "inputSchema": {
             "type": "object",
-            "properties": {"file_id": {"type": "string"}},
+            "properties": {
+                "file_id": {"type": "string"},
+                "tab": {
+                    "type": "string",
+                    "description": "Google Sheets only: tab/worksheet name to read.",
+                },
+            },
             "required": ["file_id"],
         },
     },

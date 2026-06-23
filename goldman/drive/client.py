@@ -15,7 +15,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [
+    # Read everything in Liran's Drive (so Goldman can open files Liran
+    # already has, without anything being explicitly shared/forwarded).
+    "https://www.googleapis.com/auth/drive.readonly",
+    # Write only files Goldman himself creates (bill/document filing).
+    # He can never modify or delete Liran's pre-existing files.
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 class DriveConfigError(RuntimeError):
@@ -35,8 +42,10 @@ def _load_creds():
 class GoogleDriveClient:
     def __init__(self):
         creds = _load_creds()
+        self._creds = creds
         self._service = build("drive", "v3", credentials=creds,
                               cache_discovery=False)
+        self._sheets = None  # built lazily via _sheets_service()
 
     def find_folder(self, *, name: str, parent_id):
         """Return the folder id matching (name, parent_id), or None."""
@@ -127,3 +136,42 @@ class GoogleDriveClient:
             orderBy="modifiedTime desc",
         ).execute()
         return resp.get("files", [])
+
+    # --- Google Sheets / Docs reading (drive.readonly scope is enough) ---
+
+    def _sheets_service(self):
+        if self._sheets is None:
+            self._sheets = build("sheets", "v4", credentials=self._creds,
+                                 cache_discovery=False)
+        return self._sheets
+
+    def list_sheet_tabs(self, *, file_id: str) -> list:
+        """Return the tab (worksheet) titles of a Google Sheet, in order."""
+        meta = self._sheets_service().spreadsheets().get(
+            spreadsheetId=file_id, fields="sheets.properties.title",
+        ).execute()
+        return [s["properties"]["title"] for s in meta.get("sheets", [])]
+
+    def read_sheet_values(self, *, file_id: str, tab: str,
+                          max_rows: int = 200) -> list:
+        """Return up to max_rows rows of cell values for one tab.
+
+        Each row is a list of stringified cell values. A1 range = the whole
+        tab; Sheets trims to the populated area.
+        """
+        rng = f"'{tab}'" if tab else "A1:Z1000"
+        resp = self._sheets_service().spreadsheets().values().get(
+            spreadsheetId=file_id, range=rng,
+            valueRenderOption="FORMATTED_VALUE",
+        ).execute()
+        rows = resp.get("values", [])
+        return rows[:max_rows]
+
+    def export_text(self, *, file_id: str, mime: str = "text/plain") -> str:
+        """Export a Google Doc/Slides file as plain text."""
+        data = self._service.files().export(
+            fileId=file_id, mimeType=mime,
+        ).execute()
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)

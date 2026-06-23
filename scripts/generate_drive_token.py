@@ -6,9 +6,11 @@ Run this once. It opens a browser, asks you to allow Goldman to upload
 files to your Google Drive, then writes GOLDMAN_DRIVE_TOKEN_B64 to .env
 in the project root.
 
-Reuses scripts/credentials.json (same OAuth client as Gmail). Scope:
-drive.file — Goldman can only see/modify files HE creates. He cannot
-read your personal Drive.
+Reuses scripts/credentials.json (same OAuth client as Gmail). Scopes:
+drive.readonly — Goldman can read ANY file in your Drive (no sharing or
+forwarding needed). drive.file — Goldman can additionally create/modify
+only the files HE makes (bill + document filing). He can never modify or
+delete your pre-existing files.
 
 After this completes, restart Goldman (kill main.py and relaunch) so
 the new env var is picked up.
@@ -29,7 +31,10 @@ except ImportError:
     sys.exit(1)
 
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 def main():

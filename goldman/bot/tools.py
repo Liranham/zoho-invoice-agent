@@ -140,10 +140,23 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "read_drive_file",
-        "description": "Read the contents of a Drive file Goldman uploaded. Returns text for text-shaped files; for binary, returns metadata + the webViewLink.",
+        "description": (
+            "Read the contents of any Drive file Liran can access. Returns "
+            "text for text files, the full text of Google Docs, and cell "
+            "values for Google Sheets. For a Google Sheet, pass `tab` to read "
+            "a specific worksheet/tab by name; omit `tab` to list the tab "
+            "names plus the first tab's contents. For other binary files, "
+            "returns metadata + the webViewLink."
+        ),
         "input_schema": {
             "type": "object",
-            "properties": {"file_id": {"type": "string"}},
+            "properties": {
+                "file_id": {"type": "string"},
+                "tab": {
+                    "type": "string",
+                    "description": "Google Sheets only: the tab/worksheet name to read.",
+                },
+            },
             "required": ["file_id"],
         },
     },
@@ -852,28 +865,74 @@ def _list_drive_folder(ctx, args) -> str:
 
 def _read_drive_file(ctx, args) -> str:
     file_id = (args.get("file_id") or "").strip()
+    tab = (args.get("tab") or "").strip()
     if not file_id:
         return "read_drive_file error: file_id required."
     try:
         client, _ = _drive_client()
         meta = client.get_file_metadata(file_id=file_id)
         mime = meta.get("mimeType", "")
+        name = meta.get("name", file_id)
         if mime == "application/vnd.google-apps.folder":
             return f"That is a folder, not a file. Use list_drive_folder with folder_id={file_id}."
+        # Google Sheets: read cell values via the Sheets API.
+        if mime == "application/vnd.google-apps.spreadsheet":
+            return _read_google_sheet(client, file_id, name, tab)
+        # Google Docs / Slides: export as plain text.
+        if mime in ("application/vnd.google-apps.document",
+                    "application/vnd.google-apps.presentation"):
+            text = client.export_text(file_id=file_id, mime="text/plain")
+            return f"{name} (Google {mime.rsplit('.', 1)[-1]}):\n{text[:6000]}"
         # Text-shaped files: download + decode.
         TEXTY = ("text/", "application/json", "application/xml")
         if mime.startswith(TEXTY) or any(mime.startswith(t) for t in TEXTY):
             data = client.download_file_bytes(file_id=file_id)
-            return f"{meta['name']} ({mime}):\n{data.decode('utf-8', errors='replace')[:4000]}"
+            return f"{name} ({mime}):\n{data.decode('utf-8', errors='replace')[:4000]}"
         # Binary — return metadata + view link.
         return (
-            f"{meta['name']} — {mime}\n"
+            f"{name} — {mime}\n"
             f"Size: {meta.get('size', 'unknown')} bytes\n"
             f"Modified: {meta.get('modifiedTime', '?')}\n"
             f"Open: {meta.get('webViewLink', '(no link)')}"
         )
     except Exception as e:
         return f"Drive unavailable: {e}"
+
+
+def _format_sheet_rows(rows) -> str:
+    """Render rows as a compact tab-separated grid (capped width)."""
+    lines = []
+    for row in rows:
+        cells = ["" if c is None else str(c) for c in row]
+        lines.append("\t".join(cells))
+    out = "\n".join(lines)
+    return out[:6000]
+
+
+def _read_google_sheet(client, file_id, name, tab) -> str:
+    tabs = client.list_sheet_tabs(file_id=file_id)
+    if not tabs:
+        return f"{name}: this Google Sheet has no readable tabs."
+    if tab:
+        # Case-insensitive match so 'june26' finds 'June26'.
+        match = next((t for t in tabs if t.strip().lower() == tab.lower()), None)
+        if match is None:
+            return (
+                f"{name}: no tab named '{tab}'. "
+                f"Available tabs: {', '.join(tabs)}."
+            )
+        rows = client.read_sheet_values(file_id=file_id, tab=match)
+        if not rows:
+            return f"{name} — tab '{match}' is empty."
+        return f"{name} — tab '{match}' ({len(rows)} rows):\n{_format_sheet_rows(rows)}"
+    # No tab requested: list tabs + show the first one's contents.
+    first = tabs[0]
+    rows = client.read_sheet_values(file_id=file_id, tab=first)
+    body = _format_sheet_rows(rows) if rows else "(empty)"
+    return (
+        f"{name} — tabs: {', '.join(tabs)}\n"
+        f"Showing first tab '{first}' ({len(rows)} rows):\n{body}"
+    )
 
 
 # --- Zoho Books ---
