@@ -32,6 +32,24 @@ def _build_service():
     return auth.build_service()
 
 
+def build_personal_service():
+    """Build a Gmail service for Liran's PERSONAL inbox (liranhamburg@gmail.com).
+
+    SaaS subscription receipts (Notion, Miro, Lovable, Meshy, Sellerboard…)
+    arrive here, not in the AMZ-Expert work inbox. Reuses the same OAuth client
+    (GMAIL_CREDENTIALS_B64) with a separate token.
+    """
+    creds_b64 = os.getenv("GMAIL_CREDENTIALS_B64", "")
+    token_b64 = os.getenv("GOLDMAN_PERSONAL_GMAIL_TOKEN_B64", "")
+    if not creds_b64 or not token_b64:
+        raise GoldmanGmailConfigError(
+            "GMAIL_CREDENTIALS_B64 / GOLDMAN_PERSONAL_GMAIL_TOKEN_B64 not set."
+        )
+    from gmail.auth import GmailAuth
+    auth = GmailAuth(credentials_b64=creds_b64, token_b64=token_b64)
+    return auth.build_service()
+
+
 class GoldmanGmailClient:
     """Thin Gmail surface: search, read, draft. Send is intentionally absent."""
 

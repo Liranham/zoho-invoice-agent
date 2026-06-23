@@ -458,10 +458,55 @@ def action_generic_note(conn, reminder, today: date) -> str:
     return f"🔔 *Reminder — {reminder.name}*\n{note}"
 
 
+# ---- saas_invoice_filing --------------------------------------------------
+
+def action_saas_invoice_filing(conn, reminder, today: date) -> str:
+    """File last month's SaaS subscription invoice PDFs from Liran's personal
+    Gmail into Drive under AMZ-Expert Global Limited / <Year> / <Month>.
+
+    Fires on the 2nd; searches from the 1st of the *previous* month through now
+    so the just-closed month is captured. Idempotent — already-filed PDFs are
+    skipped, so re-runs and overlapping windows are safe.
+    """
+    import os
+    from goldman.gmail.client import build_personal_service, GoldmanGmailConfigError
+    from goldman.drive.client import GoogleDriveClient, DriveConfigError
+    from goldman.invoices.filing import file_invoices
+
+    root = os.getenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID", "")
+    if not root:
+        return "⚠️ *SaaS invoice filing skipped* — GOLDMAN_DRIVE_ROOT_FOLDER_ID not set."
+
+    # First day of the previous calendar month.
+    first_this = today.replace(day=1)
+    prev_last = first_this - timedelta(days=1)
+    after = prev_last.replace(day=1).strftime("%Y/%m/%d")
+
+    try:
+        gmail = build_personal_service()
+        drive = GoogleDriveClient()
+    except (GoldmanGmailConfigError, DriveConfigError) as e:
+        return f"⚠️ *SaaS invoice filing skipped* — {e}"
+
+    try:
+        report = file_invoices(gmail, drive, root, after=after)
+    except Exception as e:  # never let one bad run kill the whole tick
+        return f"⚠️ *SaaS invoice filing failed* — {e}"
+
+    uploaded = report["uploaded"]
+    if not uploaded:
+        return (f"🧾 *SaaS invoice filing* — checked since {after}, "
+                f"nothing new to file ({report['discovered']} already on record).")
+    lines = "\n".join(f"• {u}" for u in uploaded)
+    return (f"🧾 *SaaS invoices filed* — {len(uploaded)} new PDF(s) into "
+            f"AMZ-Expert Global Limited:\n{lines}")
+
+
 ACTIONS = {
     "payroll_reminder":       action_payroll_reminder,
     "payroll_reconciliation": action_payroll_reconciliation,
     "generic_note":           action_generic_note,
+    "saas_invoice_filing":    action_saas_invoice_filing,
 }
 
 
