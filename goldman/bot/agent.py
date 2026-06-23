@@ -16,7 +16,7 @@ def run_agent(
     system: str,
     messages: list,
     ctx,
-    max_iterations: int = 5,
+    max_iterations: int = 12,
     max_tokens: int = 2048,
 ) -> str:
     """Run a tool-using conversation until Claude returns plain text.
@@ -93,4 +93,30 @@ def run_agent(
 
         working.append({"role": "user", "content": tool_results})
 
-    return "(Goldman: hit the tool-iteration cap; please try again.)"
+    # Ran out of tool-iterations. Rather than discard everything Goldman
+    # gathered, make ONE final call with tools disabled so Claude is forced
+    # to answer in plain text from what it already found. The user always
+    # gets a real answer instead of a dead-end "try again".
+    try:
+        final = claude.messages.create(
+            model=model, max_tokens=max_tokens,
+            system=(
+                system
+                + "\n\nYou have gathered enough from your tools. Do NOT ask "
+                "for more tool calls — answer now in plain text using what "
+                "you have. If something is still missing, say so plainly and "
+                "give your best answer with what you found."
+            ),
+            messages=working,
+        )
+        for block in final.content:
+            if getattr(block, "type", None) == "text" and block.text.strip():
+                return block.text
+    except Exception as e:
+        logger.exception("Final no-tools wrap-up failed: %s", e)
+
+    return (
+        "I gathered a lot but ran out of steps before I could finish a "
+        "clean answer. Ask me again — ideally narrowing it to one thing — "
+        "and I'll wrap it up."
+    )
