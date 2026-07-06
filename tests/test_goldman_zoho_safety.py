@@ -134,7 +134,7 @@ def test_create_invoice_with_confirmed_true_proceeds_to_zoho():
 def test_create_invoice_multiline_maps_line_items_to_service():
     ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
     fake_invoice = MagicMock(
-        invoice_number="INV-22", customer_name="Gilad Weinberg",
+        invoice_id="ZID-22", invoice_number="INV-22", customer_name="Gilad Weinberg",
         total=2993.89, currency_code="USD",
     )
     fake_svc = MagicMock()
@@ -153,6 +153,7 @@ def test_create_invoice_multiline_maps_line_items_to_service():
             },
         )
     assert "INV-22" in out
+    assert "ZID-22" in out  # invoice_id surfaced so the caller can chain mark_invoice_paid
     li = fake_svc.create_invoice.call_args.kwargs["line_items"]
     assert len(li) == 2
     assert li[0]["rate"] == 2943.89

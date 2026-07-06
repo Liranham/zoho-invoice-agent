@@ -1089,7 +1089,8 @@ def _create_invoice(ctx, args) -> str:
         )
         return (
             f"Created invoice {invoice.invoice_number} for "
-            f"{invoice.customer_name} — total {invoice.total} {invoice.currency_code or ''}."
+            f"{invoice.customer_name} — total {invoice.total} {invoice.currency_code or ''} "
+            f"[invoice_id={invoice.invoice_id}]."
         )
     return _zoho_guardrail("create_invoice", ctx, args, work)
 
