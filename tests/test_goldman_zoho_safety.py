@@ -32,6 +32,11 @@ def test_needs_confirmation_blocks_unconfirmed_writes():
     assert needs_confirmation("send_invoice", {}) is True
 
 
+def test_needs_confirmation_blocks_mark_invoice_paid():
+    assert needs_confirmation("mark_invoice_paid", {}) is True
+    assert needs_confirmation("mark_invoice_paid", {"confirmed": True}) is False
+
+
 def test_needs_confirmation_passes_when_confirmed():
     assert needs_confirmation("create_invoice", {"confirmed": True}) is False
 
@@ -124,6 +129,93 @@ def test_create_invoice_with_confirmed_true_proceeds_to_zoho():
     assert "INV-100" in out
     assert "Pacific Edge Outsourcing LLC" in out
     fake_svc.create_invoice.assert_called_once()
+
+
+def test_create_invoice_multiline_maps_line_items_to_service():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_invoice = MagicMock(
+        invoice_number="INV-22", customer_name="Gilad Weinberg",
+        total=2993.89, currency_code="USD",
+    )
+    fake_svc = MagicMock()
+    fake_svc.create_invoice.return_value = fake_invoice
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="create_invoice",
+            arguments={
+                "entity": "seo", "customer_id": "C1", "confirmed": True,
+                "line_items": [
+                    {"description": "Philippine VA contractor staffing services — cost reimbursement + service fee",
+                     "rate": 2943.89, "quantity": 1, "account_id": "acct_sales"},
+                    {"description": "Service fee", "rate": 50, "quantity": 1, "account_id": "acct_sales"},
+                ],
+            },
+        )
+    assert "INV-22" in out
+    li = fake_svc.create_invoice.call_args.kwargs["line_items"]
+    assert len(li) == 2
+    assert li[0]["rate"] == 2943.89
+    assert li[0]["account_id"] == "acct_sales"
+    assert li[1]["description"] == "Service fee"
+    assert li[1]["rate"] == 50.0
+
+
+def test_mark_invoice_paid_first_call_returns_confirmation_prompt():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    out = execute_tool(
+        ctx=ctx, name="mark_invoice_paid",
+        arguments={"entity": "seo", "invoice_id": "inv_9", "account_id": "acct_bank"},
+    )
+    assert "CONFIRMATION REQUIRED" in out
+    assert "PAID" in out
+    # Crucially: did NOT touch the Zoho service.
+
+
+def test_mark_invoice_paid_confirmed_records_payment():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_invoice = MagicMock(
+        invoice_number="INV-22", currency_code="USD", status="sent",
+        balance=2993.89, total=2993.89, customer_id="C1",
+    )
+    fake_svc = MagicMock()
+    fake_svc.get_invoice.return_value = fake_invoice
+    fake_svc.record_payment.return_value = {"payment_id": "pay_1"}
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="mark_invoice_paid",
+            arguments={"entity": "seo", "invoice_id": "inv_9", "account_id": "acct_bank",
+                       "amount": 2993.89, "date": "2026-06-22", "payment_mode": "Cash",
+                       "reference_number": "REF123", "confirmed": True},
+        )
+    assert "INV-22" in out
+    assert "marked paid" in out.lower()
+    kwargs = fake_svc.record_payment.call_args.kwargs
+    assert kwargs["amount"] == 2993.89
+    assert kwargs["account_id"] == "acct_bank"
+    assert kwargs["payment_mode"] == "Cash"
+    assert kwargs["reference_number"] == "REF123"
+    assert kwargs["customer_id"] == "C1"
+
+
+def test_mark_invoice_paid_skips_already_paid_invoice():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_invoice = MagicMock(
+        invoice_number="INV-22", currency_code="USD", status="paid",
+        balance=0.0, total=2993.89, customer_id="C1",
+    )
+    fake_svc = MagicMock()
+    fake_svc.get_invoice.return_value = fake_invoice
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="mark_invoice_paid",
+            arguments={"entity": "seo", "invoice_id": "inv_9", "account_id": "acct_bank",
+                       "confirmed": True},
+        )
+    assert "already settled" in out.lower()
+    fake_svc.record_payment.assert_not_called()
 
 
 def test_list_customers_includes_entity_banner_no_confirmation():

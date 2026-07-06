@@ -21,6 +21,7 @@ class Invoice:
     total: float
     balance: float
     currency_code: str
+    customer_id: str = ""
     line_items: list[dict] = field(default_factory=list)
 
 
@@ -39,6 +40,7 @@ class InvoiceService:
             total=float(raw.get("total", 0)),
             balance=float(raw.get("balance", 0)),
             currency_code=raw.get("currency_code", ""),
+            customer_id=raw.get("customer_id", ""),
             line_items=raw.get("line_items", []),
         )
 
@@ -104,3 +106,42 @@ class InvoiceService:
         self.client.post(f"invoices/{invoice_id}/email")
         logger.info("Invoice emailed: %s", invoice_id)
         return True
+
+    def record_payment(
+        self,
+        invoice_id: str,
+        customer_id: str,
+        amount: float,
+        account_id: str,
+        date: str = "",
+        payment_mode: str = "banktransfer",
+        reference_number: str = "",
+    ) -> dict:
+        """Record a customer payment against an invoice (marks it paid).
+
+        Creating a customer payment in Zoho Books applies `amount` to the
+        invoice, reducing its balance — a full payment moves the invoice to
+        status "paid". `account_id` is the deposit ("paid through") bank/cash
+        account. Returns the raw Zoho payment dict (includes payment_id).
+        """
+        body = {
+            "customer_id": customer_id,
+            "payment_mode": payment_mode,
+            "amount": float(amount),
+            "account_id": account_id,
+            "invoices": [
+                {"invoice_id": invoice_id, "amount_applied": float(amount)}
+            ],
+        }
+        if date:
+            body["date"] = date
+        if reference_number:
+            body["reference_number"] = reference_number
+
+        data = self.client.post("customerpayments", json=body)
+        payment = data.get("payment", data)
+        logger.info(
+            "Payment recorded: %s — invoice %s, amount %s",
+            payment.get("payment_id"), invoice_id, amount,
+        )
+        return payment

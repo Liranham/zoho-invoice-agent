@@ -90,6 +90,81 @@ def test_delete_invoice():
     client.delete.assert_called_once_with("invoices/inv_123")
 
 
+def test_create_invoice_multiline_passes_all_lines():
+    svc, client = _make_service(
+        {
+            "post": {
+                "invoice": {
+                    "invoice_id": "inv_ml",
+                    "invoice_number": "INV-050",
+                    "status": "draft",
+                    "customer_name": "Gilad Weinberg",
+                    "date": "2026-06-22",
+                    "due_date": "2026-06-22",
+                    "total": 2993.89,
+                    "balance": 2993.89,
+                    "currency_code": "USD",
+                    "line_items": [],
+                }
+            }
+        }
+    )
+    svc.create_invoice(
+        customer_id="cust_1",
+        line_items=[
+            {"description": "Philippine VA contractor staffing services — cost reimbursement + service fee",
+             "rate": 2943.89, "quantity": 1, "account_id": "acct_sales"},
+            {"description": "Service fee", "rate": 50, "quantity": 1, "account_id": "acct_sales"},
+        ],
+        date="2026-06-22",
+    )
+    body = client.post.call_args.kwargs["json"]
+    assert len(body["line_items"]) == 2
+    assert body["line_items"][0]["rate"] == 2943.89
+    assert body["line_items"][1]["description"] == "Service fee"
+    assert body["line_items"][1]["rate"] == 50
+
+
+def test_record_payment_posts_customerpayment_body():
+    svc, client = _make_service({"post": {"payment": {"payment_id": "pay_1"}}})
+    payment = svc.record_payment(
+        invoice_id="inv_9",
+        customer_id="cust_1",
+        amount=2993.89,
+        account_id="acct_bank",
+        date="2026-06-22",
+        payment_mode="Cash",
+        reference_number="20260622E6B7361C003104",
+    )
+    assert payment["payment_id"] == "pay_1"
+    assert client.post.call_args.args[0] == "customerpayments"
+    body = client.post.call_args.kwargs["json"]
+    assert body["customer_id"] == "cust_1"
+    assert body["amount"] == 2993.89
+    assert body["account_id"] == "acct_bank"
+    assert body["payment_mode"] == "Cash"
+    assert body["date"] == "2026-06-22"
+    assert body["reference_number"] == "20260622E6B7361C003104"
+    assert body["invoices"] == [{"invoice_id": "inv_9", "amount_applied": 2993.89}]
+
+
+def test_get_invoice_captures_customer_id():
+    svc, _ = _make_service(
+        {
+            "get": {
+                "invoice": {
+                    "invoice_id": "inv_1", "invoice_number": "INV-001",
+                    "status": "sent", "customer_name": "Gilad", "customer_id": "cust_9",
+                    "date": "2026-01-01", "due_date": "2026-01-31",
+                    "total": 200.0, "balance": 200.0, "currency_code": "USD",
+                }
+            }
+        }
+    )
+    inv = svc.get_invoice("inv_1")
+    assert inv.customer_id == "cust_9"
+
+
 def test_get_invoice():
     svc, client = _make_service(
         {

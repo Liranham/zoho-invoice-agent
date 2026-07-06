@@ -29,6 +29,7 @@ WRITE_TOOLS = {
     "create_expense",
     "create_customer",
     "send_invoice",
+    "mark_invoice_paid",
 }
 
 READ_TOOLS = {
@@ -101,10 +102,31 @@ def confirmation_prompt(info: EntityInfo, tool_name: str, args: dict) -> str:
 
 def _describe_action(tool_name: str, args: dict) -> str:
     if tool_name == "create_invoice":
+        line_items = args.get("line_items")
+        if line_items:
+            try:
+                total = sum(
+                    float(li.get("rate", li.get("amount", 0)) or 0)
+                    * float(li.get("quantity", 1) or 1)
+                    for li in line_items
+                )
+            except (TypeError, ValueError):
+                total = "?"
+            return (
+                f"CREATE INVOICE for customer_id={args.get('customer_id', '?')}, "
+                f"{len(line_items)} line(s), total={total}"
+            )
         return (
             f"CREATE INVOICE for customer_id={args.get('customer_id', '?')}, "
             f"amount={args.get('amount', '?')}, "
             f"description={args.get('description', '?')!r}"
+        )
+    if tool_name == "mark_invoice_paid":
+        return (
+            f"RECORD PAYMENT marking invoice {args.get('invoice_id', '?')} PAID "
+            f"(amount={args.get('amount', 'full balance')}, "
+            f"mode={args.get('payment_mode', 'banktransfer')}, "
+            f"deposit_account={args.get('account_id', '?')})"
         )
     if tool_name == "create_expense":
         return (

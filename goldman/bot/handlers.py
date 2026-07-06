@@ -339,7 +339,7 @@ ZOHO SAFETY (read this carefully):
   <id>]. Always read the banner. If it doesn't match what you intended,
   STOP and tell the user.
 - For WRITES (create_invoice, create_expense, create_customer,
-  send_invoice): the first call returns a confirmation prompt. Show it
+  send_invoice, mark_invoice_paid): the first call returns a confirmation prompt. Show it
   to the user. Only call again with confirmed:true AFTER the user
   explicitly says yes. Never set confirmed:true on your own.
 

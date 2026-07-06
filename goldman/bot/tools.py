@@ -172,23 +172,60 @@ TOOL_SCHEMAS = [
             "Create a new invoice in Zoho Books. "
             "HARD MAPPING: amzg=AMZ-Expert Global Limited (HK, org 876247837), "
             "seo=Pacific Edge Outsourcing LLC (US Wyoming, org 914942331). "
-            "WRITE OPERATION — first call returns a confirmation prompt; "
-            "call again with confirmed:true to actually execute. NEVER pass "
-            "confirmed:true on the first attempt; require explicit user 'yes'."
+            "Single line: pass amount (+ optional description). Multi-line: pass "
+            "line_items (a list). WRITE OPERATION — first call returns a "
+            "confirmation prompt; call again with confirmed:true to actually "
+            "execute. NEVER pass confirmed:true on the first attempt; require "
+            "explicit user 'yes'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "enum": ["amzg", "seo"]},
                 "customer_id": {"type": "string"},
-                "amount": {"type": "number"},
+                "amount": {"type": "number", "description": "Single-line total. Ignored when line_items is given."},
                 "description": {"type": "string"},
+                "line_items": {
+                    "type": "array",
+                    "description": (
+                        "Optional multi-line invoice. Each element: "
+                        "{description, rate, quantity (default 1), and optionally "
+                        "name, item_id, account_id}. Overrides amount/description."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "notes": {"type": "string", "description": "Optional invoice notes/statement."},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
                 "item_id": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False,
                               "description": "Only set true AFTER showing the confirmation prompt to the user and getting their explicit 'yes'."},
             },
-            "required": ["entity", "customer_id", "amount"],
+            "required": ["entity", "customer_id"],
+        },
+    },
+    {
+        "name": "mark_invoice_paid",
+        "description": (
+            "Record a customer payment against a Zoho Books invoice, marking it "
+            "PAID. HARD MAPPING: amzg=AMZ-Expert Global (HK), seo=Pacific Edge "
+            "(US). WRITE OPERATION — first call returns a confirmation prompt; "
+            "call again with confirmed:true. Defaults to paying the full "
+            "outstanding balance."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "invoice_id": {"type": "string"},
+                "account_id": {"type": "string", "description": "Deposit/'paid through' bank or cash account id."},
+                "amount": {"type": "number", "description": "Defaults to the invoice's full outstanding balance."},
+                "date": {"type": "string", "description": "YYYY-MM-DD payment date. Defaults to today."},
+                "payment_mode": {"type": "string", "description": "e.g. Cash, banktransfer. Default banktransfer."},
+                "reference_number": {"type": "string"},
+                "customer_id": {"type": "string", "description": "Optional; looked up from the invoice if omitted."},
+                "confirmed": {"type": "boolean", "default": False},
+            },
+            "required": ["entity", "invoice_id", "account_id"],
         },
     },
     {
@@ -602,6 +639,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _create_expense(ctx, arguments)
     if name == "send_invoice":
         return _send_invoice(ctx, arguments)
+    if name == "mark_invoice_paid":
+        return _mark_invoice_paid(ctx, arguments)
     if name == "zoho_audit_trail":
         return _zoho_audit_trail(ctx, arguments)
     # Phase 10: Hubstaff
@@ -1010,27 +1049,89 @@ def _zoho_guardrail(tool_name: str, ctx, args: dict, work):
 def _create_invoice(ctx, args) -> str:
     customer_id = args.get("customer_id")
     amount = args.get("amount")
-    if not customer_id or amount is None:
-        return "create_invoice error: customer_id and amount are required."
+    raw_line_items = args.get("line_items")
+    if not customer_id:
+        return "create_invoice error: customer_id is required."
+    if not raw_line_items and amount is None:
+        return "create_invoice error: provide either line_items or amount."
 
     def work(info):
         inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
-        line_items = [{
-            "rate": float(amount), "quantity": 1,
-            "description": args.get("description") or "",
-        }]
-        if args.get("item_id"):
-            line_items[0]["item_id"] = args["item_id"]
+        if raw_line_items:
+            line_items = []
+            for li in raw_line_items:
+                rate = li.get("rate", li.get("amount"))
+                item = {
+                    "rate": float(rate if rate is not None else 0),
+                    "quantity": float(li.get("quantity", 1)),
+                    "description": li.get("description") or li.get("name") or "",
+                }
+                if li.get("name"):
+                    item["name"] = li["name"]
+                if li.get("item_id"):
+                    item["item_id"] = li["item_id"]
+                if li.get("account_id"):
+                    item["account_id"] = li["account_id"]
+                line_items.append(item)
+        else:
+            line_items = [{
+                "rate": float(amount), "quantity": 1,
+                "description": args.get("description") or "",
+            }]
+            if args.get("item_id"):
+                line_items[0]["item_id"] = args["item_id"]
         invoice = inv_svc.create_invoice(
             customer_id=customer_id,
             line_items=line_items,
             date=args.get("date", ""),
+            notes=args.get("notes", ""),
+            invoice_number=args.get("invoice_number", ""),
         )
         return (
             f"Created invoice {invoice.invoice_number} for "
             f"{invoice.customer_name} — total {invoice.total} {invoice.currency_code or ''}."
         )
     return _zoho_guardrail("create_invoice", ctx, args, work)
+
+
+def _mark_invoice_paid(ctx, args) -> str:
+    invoice_id = args.get("invoice_id")
+    if not invoice_id:
+        return "mark_invoice_paid error: invoice_id is required."
+    account_id = args.get("account_id")
+    if not account_id:
+        return "mark_invoice_paid error: account_id (the deposit/bank account) is required."
+
+    def work(info):
+        inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
+        invoice = inv_svc.get_invoice(invoice_id)
+        if invoice is None:
+            return f"invoice {invoice_id} not found."
+        if (invoice.status or "").lower() == "paid" or (invoice.balance or 0) <= 0:
+            return (
+                f"Invoice {invoice.invoice_number} is already settled "
+                f"(status {invoice.status}, balance {invoice.balance}) — no payment recorded."
+            )
+        customer_id = args.get("customer_id") or invoice.customer_id
+        if not customer_id:
+            return "mark_invoice_paid error: could not determine customer_id for the payment."
+        amt = args.get("amount")
+        amount = float(amt) if amt is not None else float(invoice.balance or invoice.total)
+        payment = inv_svc.record_payment(
+            invoice_id=invoice_id,
+            customer_id=customer_id,
+            amount=amount,
+            account_id=account_id,
+            date=args.get("date", ""),
+            payment_mode=args.get("payment_mode", "banktransfer"),
+            reference_number=args.get("reference_number", ""),
+        )
+        return (
+            f"Recorded {amount} {invoice.currency_code or ''} payment against "
+            f"invoice {invoice.invoice_number} → marked paid "
+            f"(payment_id {payment.get('payment_id')})."
+        )
+    return _zoho_guardrail("mark_invoice_paid", ctx, args, work)
 
 
 def _list_customers(ctx, args) -> str:

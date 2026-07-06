@@ -253,22 +253,30 @@ TOOLS = [
         "description": (
             "Create a Zoho Books invoice. HARD MAPPING: amzg=AMZ-Expert Global "
             "Limited (HK, org 876247837), seo=Pacific Edge Outsourcing LLC "
-            "(US Wyoming, org 914942331). NEVER confuse them. WRITE — first "
-            "call returns a confirmation prompt; only call again with "
-            "confirmed:true after the user says yes."
+            "(US Wyoming, org 914942331). NEVER confuse them. Single line: pass "
+            "amount (+ optional description). Multi-line: pass line_items (a "
+            "list of {description, rate, quantity, optional name/item_id/account_id}). "
+            "WRITE — first call returns a confirmation prompt; only call again "
+            "with confirmed:true after the user says yes."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "entity": {"type": "string", "enum": ["amzg", "seo"]},
                 "customer_id": {"type": "string"},
-                "amount": {"type": "number"},
+                "amount": {"type": "number", "description": "Single-line total. Ignored when line_items is given."},
                 "description": {"type": "string"},
+                "line_items": {
+                    "type": "array",
+                    "description": "Multi-line invoice. Each: {description, rate, quantity (default 1), optional name, item_id, account_id}. Overrides amount/description.",
+                    "items": {"type": "object"},
+                },
+                "notes": {"type": "string"},
                 "date": {"type": "string"},
                 "item_id": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False},
             },
-            "required": ["entity", "customer_id", "amount"],
+            "required": ["entity", "customer_id"],
         },
     },
     {
@@ -341,6 +349,30 @@ TOOLS = [
                 "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["entity", "invoice_id"],
+        },
+    },
+    {
+        "name": "mark_invoice_paid",
+        "description": (
+            "Record a customer payment against a Zoho Books invoice, marking it "
+            "PAID. HARD MAPPING: amzg=AMZ-Expert Global (HK), seo=Pacific Edge "
+            "(US). WRITE — first call returns a confirmation prompt; call again "
+            "with confirmed:true. Defaults to paying the full outstanding balance."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "invoice_id": {"type": "string"},
+                "account_id": {"type": "string", "description": "Deposit/'paid through' bank or cash account id."},
+                "amount": {"type": "number", "description": "Defaults to the invoice's full outstanding balance."},
+                "date": {"type": "string", "description": "YYYY-MM-DD payment date. Defaults to today."},
+                "payment_mode": {"type": "string", "description": "e.g. Cash, banktransfer. Default banktransfer."},
+                "reference_number": {"type": "string"},
+                "customer_id": {"type": "string", "description": "Optional; looked up from the invoice if omitted."},
+                "confirmed": {"type": "boolean", "default": False},
+            },
+            "required": ["entity", "invoice_id", "account_id"],
         },
     },
     {
@@ -691,7 +723,7 @@ def _run_tool(name: str, arguments: dict) -> str:
         "search_emails", "read_email_thread", "draft_email",
         "list_drive_folder", "read_drive_file",
         "create_invoice", "list_customers", "create_customer",
-        "create_expense", "send_invoice", "zoho_audit_trail",
+        "create_expense", "send_invoice", "mark_invoice_paid", "zoho_audit_trail",
         "list_team_members", "hours_worked", "set_member_rate",
         "payroll_summary", "payroll_anomalies",
         "set_reminder", "list_reminders", "disable_reminder", "fire_reminder_now",
