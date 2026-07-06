@@ -44,7 +44,8 @@ class ZohoClient:
         for attempt in range(3):
             self._wait_for_rate_limit()
             headers = self.auth.get_auth_header()
-            headers["Content-Type"] = "application/json"
+            if "files" not in kwargs:
+                headers["Content-Type"] = "application/json"
 
             resp = req.request(
                 method, url, headers=headers, params=params, **kwargs
