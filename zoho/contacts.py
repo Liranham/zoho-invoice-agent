@@ -16,6 +16,7 @@ class Contact:
     contact_name: str
     company_name: str
     email: str
+    contact_type: str = ""
 
 
 class ContactService:
@@ -23,10 +24,13 @@ class ContactService:
         self.client = client
         self._cache: dict[str, str] = {}  # name (lower) -> contact_id
 
-    def list_contacts(self, page: int = 1, per_page: int = 200) -> list[Contact]:
-        data = self.client.get(
-            "contacts", params={"page": page, "per_page": per_page}
-        )
+    def list_contacts(
+        self, page: int = 1, per_page: int = 200, contact_type: str = "",
+    ) -> list[Contact]:
+        params = {"page": page, "per_page": per_page}
+        if contact_type:
+            params["contact_type"] = contact_type
+        data = self.client.get("contacts", params=params)
         contacts = []
         for raw in data.get("contacts", []):
             c = Contact(
@@ -34,6 +38,7 @@ class ContactService:
                 contact_name=raw.get("contact_name", ""),
                 company_name=raw.get("company_name", ""),
                 email=raw.get("email", ""),
+                contact_type=raw.get("contact_type", ""),
             )
             contacts.append(c)
             self._cache[c.contact_name.lower()] = c.contact_id
@@ -52,6 +57,7 @@ class ContactService:
             contact_name=raw.get("contact_name", ""),
             company_name=raw.get("company_name", ""),
             email=raw.get("email", ""),
+            contact_type=raw.get("contact_type", ""),
         )
 
     def get_customer_id(self, name: str) -> str:
@@ -105,6 +111,7 @@ class ContactService:
             contact_name=raw.get("contact_name", contact_name),
             company_name=raw.get("company_name", company_name),
             email=raw.get("email", email),
+            contact_type=raw.get("contact_type", contact_type),
         )
         self._cache[c.contact_name.lower()] = c.contact_id
         logger.info("Created contact %s (%s)", c.contact_name, c.contact_id)
