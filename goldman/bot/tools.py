@@ -1329,19 +1329,30 @@ def _create_expense(ctx, args) -> str:
         _, contact_svc, _, expense_svc = _zoho_services_for(ctx, info.slug)
         if not expense_svc:
             return "create_expense not yet supported in this build."
+        created_vendor_note = ""
         if not vendor_id and pending_vendor_name:
             new_vendor = contact_svc.create_contact(
                 contact_name=pending_vendor_name, contact_type="vendor",
             )
             vendor_id = new_vendor.contact_id
-        result = expense_svc.create_expense(
-            amount=float(amount),
-            date=args.get("date", ""),
-            description=args.get("description", ""),
-            vendor_id=vendor_id or "",
-            account_id=args.get("account_id", ""),
-            currency=args.get("currency", "USD"),
-        )
+            created_vendor_note = (
+                f" Note: vendor '{pending_vendor_name}' ({vendor_id}) was "
+                f"already created in Zoho before this failed — reuse that "
+                f"vendor_id next time instead of creating a duplicate."
+            )
+        try:
+            result = expense_svc.create_expense(
+                amount=float(amount),
+                date=args.get("date", ""),
+                description=args.get("description", ""),
+                vendor_id=vendor_id or "",
+                account_id=args.get("account_id", ""),
+                currency=args.get("currency", "USD"),
+            )
+        except Exception as e:
+            if created_vendor_note:
+                raise RuntimeError(f"{e}.{created_vendor_note}") from e
+            raise
         vendor_note = f" (new vendor {vendor_id})" if pending_vendor_name else ""
         return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')}){vendor_note}."
     return _zoho_guardrail("create_expense", ctx, args, work)

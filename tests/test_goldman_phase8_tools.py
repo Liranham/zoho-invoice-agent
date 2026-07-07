@@ -438,3 +438,26 @@ def test_create_expense_similar_vendor_choice_new_creates_separate_vendor():
     _, kwargs = expense_svc.create_expense.call_args
     assert kwargs["vendor_id"] == "V-4"
     assert "E-4" in out
+
+
+def test_create_expense_failure_after_vendor_created_mentions_orphaned_vendor():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = []
+    contact_svc.create_contact.return_value = SimpleNamespace(contact_id="V-9")
+    expense_svc = MagicMock()
+    expense_svc.create_expense.side_effect = RuntimeError("Zoho rejected the expense")
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={"entity": "amzg", "amount": 50, "vendor_name": "Bezeq", "confirmed": True},
+        )
+
+    contact_svc.create_contact.assert_called_once_with(contact_name="Bezeq", contact_type="vendor")
+    assert "V-9" in out
+    assert "already created" in out.lower() or "vendor" in out.lower()
