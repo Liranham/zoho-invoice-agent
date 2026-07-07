@@ -409,6 +409,26 @@ TOOLS = [
         },
     },
     {
+        "name": "notify_liran",
+        "description": (
+            "Send Liran a Telegram message AS GOLDMAN and record it in Goldman's "
+            "conversation memory, so a later reply ('send it', 'yes', 'send the "
+            "Gilad invoice') is understood in context. Optionally pin the "
+            "Telegram session to a company via `entity` (seo/amzg). ALWAYS use "
+            "this for autonomous/scheduled Telegram updates Liran might reply to "
+            "— never post via the raw Bot API for those, or Goldman won't "
+            "remember sending the message and will lose the thread."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+            },
+            "required": ["text"],
+        },
+    },
+    {
         "name": "zoho_audit_trail",
         "description": (
             "Show Goldman's Zoho audit log — every Zoho call (executed and "
@@ -757,6 +777,7 @@ def _run_tool(name: str, arguments: dict) -> str:
         "list_drive_folder", "read_drive_file", "ensure_drive_folder",
         "create_invoice", "list_customers", "list_vendors", "create_customer",
         "create_expense", "send_invoice", "mark_invoice_paid", "zoho_audit_trail",
+        "notify_liran",
         "list_team_members", "hours_worked", "set_member_rate",
         "payroll_summary", "payroll_anomalies",
         "set_reminder", "list_reminders", "disable_reminder", "fire_reminder_now",

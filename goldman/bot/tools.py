@@ -251,6 +251,28 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "notify_liran",
+        "description": (
+            "Send Liran a Telegram message AS GOLDMAN and record it in Goldman's "
+            "conversation memory, so a later reply ('send it', 'yes', 'send the "
+            "Gilad invoice') is understood in context. Optionally pin the "
+            "Telegram session to a company via `entity` (seo/amzg) so the "
+            "follow-up resolves to the right Zoho org. ALWAYS use this for "
+            "autonomous/scheduled Telegram updates Liran might reply to — never "
+            "post via the raw Bot API for those, or Goldman won't remember "
+            "sending the message and will lose the thread."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The message to send to Liran."},
+                "entity": {"type": "string", "enum": ["amzg", "seo"],
+                            "description": "Optional. Pins the Telegram session to this company so a follow-up resolves correctly."},
+            },
+            "required": ["text"],
+        },
+    },
+    {
         "name": "list_customers",
         "description": (
             "List Zoho Books customers. HARD MAPPING: amzg=AMZ-Expert Global "
@@ -701,6 +723,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _send_invoice(ctx, arguments)
     if name == "mark_invoice_paid":
         return _mark_invoice_paid(ctx, arguments)
+    if name == "notify_liran":
+        return _notify_liran(ctx, arguments)
     if name == "zoho_audit_trail":
         return _zoho_audit_trail(ctx, arguments)
     # Phase 10: Hubstaff
@@ -1213,6 +1237,62 @@ def _mark_invoice_paid(ctx, args) -> str:
             f"(payment_id {payment.get('payment_id')})."
         )
     return _zoho_guardrail("mark_invoice_paid", ctx, args, work)
+
+
+def _notify_liran(ctx, args) -> str:
+    """Send Liran a Telegram message AS GOLDMAN and record it in Goldman's
+    conversation memory, so that when Liran replies ('send it', 'yes',
+    'send the Gilad invoice') Goldman has the full context of what he just
+    told him. Optional `entity` pins the Telegram session to that company
+    (seo/amzg) so the follow-up resolves to the right Zoho org instead of the
+    amzg default. Use this for any autonomous/scheduled Telegram update that
+    Liran might reply to — never post via the raw Bot API for those, or Goldman
+    won't remember sending it."""
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "notify_liran error: text is required."
+    entity = args.get("entity") or None
+
+    import os
+    from datetime import datetime
+
+    token = os.getenv("GOLDMAN_TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("GOLDMAN_TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return ("notify_liran error: GOLDMAN_TELEGRAM_BOT_TOKEN / "
+                "GOLDMAN_TELEGRAM_CHAT_ID are not configured.")
+
+    from tg_notify.notifier import TelegramNotifier
+    if not TelegramNotifier(token, chat_id).send_message(text):
+        return "notify_liran error: Telegram send failed."
+
+    # Record the message as an assistant turn so a reply carries context.
+    # Delivery already happened; memory write is best-effort.
+    try:
+        from goldman_db.bot_sessions import BotSessionRepository
+        from goldman_db.conversation_turns import ConversationTurnRepository
+        from goldman_db.entities import EntityRepository
+
+        session_id = f"tg-{chat_id}-{datetime.utcnow().strftime('%Y%m%d')}"
+        bot_sessions = BotSessionRepository(ctx.conn)
+        sess = bot_sessions.get_or_create(
+            front_door="telegram", chat_id=str(chat_id),
+            default_entity=(entity or "amzg"), session_id=session_id,
+        )
+        if entity:
+            bot_sessions.set_current_entity("telegram", str(chat_id), entity)
+        ent = EntityRepository(ctx.conn).get_by_slug(entity) if entity else None
+        ConversationTurnRepository(ctx.conn).insert(
+            entity_id=(ent.id if ent else None),
+            session_id=sess.session_id,
+            front_door="telegram", role="assistant", text=text,
+        )
+    except Exception as e:
+        return ("Sent to Liran on Telegram (as Goldman), but could NOT record it "
+                f"in conversation memory (a reply may lack context): {e}")
+
+    pin = f" (session pinned to {entity})" if entity else ""
+    return f"Sent to Liran on Telegram as Goldman and recorded it in his memory{pin}."
 
 
 def _list_customers(ctx, args) -> str:
