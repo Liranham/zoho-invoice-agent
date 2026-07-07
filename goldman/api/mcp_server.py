@@ -357,6 +357,8 @@ TOOLS = [
                 "currency": {"type": "string"},
                 "date": {"type": "string"},
                 "vendor_id": {"type": "string"},
+                "vendor_name": {"type": "string", "description": "Alternative to vendor_id."},
+                "vendor_choice": {"type": "string", "enum": ["existing", "new"]},
                 "description": {"type": "string"},
                 "account_id": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False},

@@ -309,8 +309,15 @@ TOOL_SCHEMAS = [
         "name": "create_expense",
         "description": (
             "Record a bill/expense in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
-            "Global (HK), seo=Pacific Edge (US). WRITE OPERATION — first call "
-            "returns a confirmation prompt; call again with confirmed:true."
+            "Global (HK), seo=Pacific Edge (US). Pass vendor_id if you already "
+            "know it. Otherwise pass vendor_name: if it matches an existing "
+            "vendor exactly, that vendor is used silently; if it's similar to "
+            "an existing vendor, you'll be asked to pick 'existing' or 'new' "
+            "via vendor_choice (re-issue the call with that + confirmed:true); "
+            "if nothing similar exists, a new vendor is created automatically. "
+            "WRITE OPERATION — first call returns a confirmation prompt; call "
+            "again with confirmed:true to actually execute. NEVER pass "
+            "confirmed:true on the first attempt; require explicit user 'yes'."
         ),
         "input_schema": {
             "type": "object",
@@ -320,6 +327,14 @@ TOOL_SCHEMAS = [
                 "currency": {"type": "string", "default": "USD"},
                 "date": {"type": "string"},
                 "vendor_id": {"type": "string"},
+                "vendor_name": {
+                    "type": "string",
+                    "description": "Alternative to vendor_id — Goldman resolves or creates it.",
+                },
+                "vendor_choice": {
+                    "type": "string", "enum": ["existing", "new"],
+                    "description": "Only needed after Goldman flags a similar existing vendor.",
+                },
                 "description": {"type": "string"},
                 "account_id": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False},
@@ -1252,19 +1267,83 @@ def _create_expense(ctx, args) -> str:
     if amount is None:
         return "create_expense error: amount is required."
 
+    args = dict(args)
+    vendor_id = (args.get("vendor_id") or "").strip()
+    vendor_name = (args.get("vendor_name") or "").strip()
+    pending_vendor_name = ""
+
+    if not vendor_id and vendor_name:
+        from goldman.zoho_safety import banner, log_audit, resolve_entity, UnknownEntityError
+        try:
+            info = resolve_entity(ctx.conn, args.get("entity") or "")
+        except UnknownEntityError:
+            info = None
+        if info is not None:
+            from goldman.vendor_match import match_vendor
+            _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
+            try:
+                candidates = contact_svc.list_contacts(contact_type="vendor")
+            except Exception as e:
+                return (
+                    f"{banner(info)}\n"
+                    f"Couldn't check Zoho's vendor list ({e}) — pass vendor_id "
+                    f"directly this time, or try again in a moment."
+                )
+            match = match_vendor(vendor_name, candidates)
+            if match.kind == "exact":
+                vendor_id = match.candidates[0].contact_id
+            elif match.kind == "similar":
+                choice = (args.get("vendor_choice") or "").strip().lower()
+                if choice == "existing":
+                    vendor_id = match.candidates[0].contact_id
+                elif choice == "new":
+                    pending_vendor_name = vendor_name
+                else:
+                    names = ", ".join(
+                        f"'{c.contact_name}' ({c.contact_id})" for c in match.candidates
+                    )
+                    log_audit(
+                        ctx.conn, info=info, tool_name="create_expense",
+                        arguments=args, status="blocked_ambiguous",
+                        result_summary=f"vendor name {vendor_name!r} similar to: {names}",
+                        channel_id=getattr(ctx, "chat_id", "") or "",
+                    )
+                    return (
+                        f"{banner(info)}\n"
+                        f"⚠️  VENDOR NEEDS A DECISION before I log this "
+                        f"{amount} {args.get('currency', 'USD')} expense "
+                        f"({args.get('description', 'no description')!r}).\n"
+                        f"   You said: '{vendor_name}'\n"
+                        f"   Existing similar vendor(s): {names}\n\n"
+                        f"Reply 'existing' to use {match.candidates[0].contact_name}, "
+                        f"or 'new' to create '{vendor_name}' as a separate vendor. "
+                        f"Say 'confirmed' too and I'll log the expense in the same step."
+                    )
+            else:
+                pending_vendor_name = vendor_name
+
+    args["vendor_id"] = vendor_id
+
     def work(info):
-        _, _, _, expense_svc = _zoho_services_for(ctx, info.slug)
+        nonlocal vendor_id
+        _, contact_svc, _, expense_svc = _zoho_services_for(ctx, info.slug)
         if not expense_svc:
             return "create_expense not yet supported in this build."
+        if not vendor_id and pending_vendor_name:
+            new_vendor = contact_svc.create_contact(
+                contact_name=pending_vendor_name, contact_type="vendor",
+            )
+            vendor_id = new_vendor.contact_id
         result = expense_svc.create_expense(
             amount=float(amount),
             date=args.get("date", ""),
             description=args.get("description", ""),
-            vendor_id=args.get("vendor_id", ""),
+            vendor_id=vendor_id or "",
             account_id=args.get("account_id", ""),
-            currency_code=args.get("currency", "USD"),
+            currency=args.get("currency", "USD"),
         )
-        return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')})."
+        vendor_note = f" (new vendor {vendor_id})" if pending_vendor_name else ""
+        return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')}){vendor_note}."
     return _zoho_guardrail("create_expense", ctx, args, work)
 
 

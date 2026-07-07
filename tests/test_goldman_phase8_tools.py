@@ -255,3 +255,186 @@ def test_read_drive_file_exports_google_doc_text():
                            arguments={"file_id": "doc1"})
     fake.export_text.assert_called_once_with(file_id="doc1", mime="text/plain")
     assert "Discussed the June offsets." in out
+
+
+def _resolve_entity_row(slug="amzg", legal_name="AMZ-Expert Global Limited",
+                         org_id="876247837"):
+    # Matches the 3-column SELECT in goldman.zoho_safety.resolve_entity —
+    # NOT the same shape as _entity_row() (EntityRepository's 12 columns).
+    return (slug, legal_name, org_id)
+
+
+def test_create_expense_exact_vendor_match_uses_existing_id_and_fixes_currency_kwarg():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = [
+        SimpleNamespace(contact_id="V-1", contact_name="Akiva CPA"),
+    ]
+    expense_svc = MagicMock()
+    expense_svc.create_expense.return_value = SimpleNamespace(expense_id="E-1")
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={
+                "entity": "amzg", "amount": 100, "currency": "ILS",
+                "vendor_name": "Akiva CPA", "confirmed": True,
+            },
+        )
+
+    contact_svc.list_contacts.assert_called_with(contact_type="vendor")
+    expense_svc.create_expense.assert_called_once()
+    _, kwargs = expense_svc.create_expense.call_args
+    assert kwargs["vendor_id"] == "V-1"
+    assert kwargs["currency"] == "ILS"  # regression check for the currency_code bug
+    assert "currency_code" not in kwargs
+    contact_svc.create_contact.assert_not_called()
+    assert "E-1" in out
+
+
+def test_create_expense_no_match_auto_creates_vendor_on_confirm():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = []
+    contact_svc.create_contact.return_value = SimpleNamespace(contact_id="V-9")
+    expense_svc = MagicMock()
+    expense_svc.create_expense.return_value = SimpleNamespace(expense_id="E-2")
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        # First call: not yet confirmed — should describe the new vendor, not create anything.
+        preview = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={"entity": "amzg", "amount": 50, "vendor_name": "Bezeq"},
+        )
+        assert "Bezeq" in preview
+        assert "NEW" in preview
+        contact_svc.create_contact.assert_not_called()
+
+        # Second call: confirmed — now it should create the vendor, then the expense.
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={"entity": "amzg", "amount": 50, "vendor_name": "Bezeq", "confirmed": True},
+        )
+
+    contact_svc.create_contact.assert_called_once_with(contact_name="Bezeq", contact_type="vendor")
+    _, kwargs = expense_svc.create_expense.call_args
+    assert kwargs["vendor_id"] == "V-9"
+    assert "E-2" in out
+
+
+def test_create_expense_similar_vendor_asks_without_creating():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = [
+        SimpleNamespace(contact_id="V-1", contact_name="Akiva CPA"),
+    ]
+    expense_svc = MagicMock()
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={
+                "entity": "amzg", "amount": 100, "currency": "ILS",
+                "vendor_name": "Akiva Cohen Accounting", "confirmed": True,
+            },
+        )
+
+    assert "Akiva CPA" in out
+    assert "existing" in out.lower()
+    assert "new" in out.lower()
+    contact_svc.create_contact.assert_not_called()
+    expense_svc.create_expense.assert_not_called()
+
+
+def test_create_expense_similar_vendor_choice_existing_uses_matched_id():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = [
+        SimpleNamespace(contact_id="V-1", contact_name="Akiva CPA"),
+    ]
+    expense_svc = MagicMock()
+    expense_svc.create_expense.return_value = SimpleNamespace(expense_id="E-3")
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={
+                "entity": "amzg", "amount": 100,
+                "vendor_name": "Akiva Cohen Accounting",
+                "vendor_choice": "existing", "confirmed": True,
+            },
+        )
+
+    contact_svc.create_contact.assert_not_called()
+    _, kwargs = expense_svc.create_expense.call_args
+    assert kwargs["vendor_id"] == "V-1"
+    assert "E-3" in out
+
+
+def test_create_expense_vendor_lookup_failure_asks_for_vendor_id_directly():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.side_effect = RuntimeError("Zoho API timeout")
+    expense_svc = MagicMock()
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={"entity": "amzg", "amount": 100, "vendor_name": "Bezeq"},
+        )
+
+    assert "vendor_id" in out.lower()
+    expense_svc.create_expense.assert_not_called()
+    contact_svc.create_contact.assert_not_called()
+
+
+def test_create_expense_similar_vendor_choice_new_creates_separate_vendor():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _resolve_entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = [
+        SimpleNamespace(contact_id="V-1", contact_name="Akiva CPA"),
+    ]
+    contact_svc.create_contact.return_value = SimpleNamespace(contact_id="V-4")
+    expense_svc = MagicMock()
+    expense_svc.create_expense.return_value = SimpleNamespace(expense_id="E-4")
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), expense_svc)):
+        out = execute_tool(
+            ctx=ctx, name="create_expense",
+            arguments={
+                "entity": "amzg", "amount": 100,
+                "vendor_name": "Akiva Cohen Accounting",
+                "vendor_choice": "new", "confirmed": True,
+            },
+        )
+
+    contact_svc.create_contact.assert_called_once_with(
+        contact_name="Akiva Cohen Accounting", contact_type="vendor",
+    )
+    _, kwargs = expense_svc.create_expense.call_args
+    assert kwargs["vendor_id"] == "V-4"
+    assert "E-4" in out
