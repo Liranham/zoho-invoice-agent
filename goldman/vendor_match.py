@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Literal
 
+__all__ = ["VendorMatch", "match_vendor", "normalize_name", "significant_words"]
+
 _FILLER_WORDS = {
     "the", "llc", "inc", "ltd", "co", "corp", "cpa", "group",
     "services", "company", "holdings", "and", "of",
@@ -42,7 +44,7 @@ def significant_words(name: str) -> set:
 
 @dataclass
 class VendorMatch:
-    kind: str  # Literal["exact", "similar", "none"]
+    kind: Literal["exact", "similar", "none"]
     candidates: list = field(default_factory=list)
 
 
