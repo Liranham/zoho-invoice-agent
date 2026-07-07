@@ -267,6 +267,25 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "list_vendors",
+        "description": (
+            "List Zoho Books vendors (contact_type=vendor). HARD MAPPING: "
+            "amzg=AMZ-Expert Global Limited (HK), seo=Pacific Edge Outsourcing "
+            "LLC (US). Read-only; no confirmation needed. Result is stamped "
+            "with [ENTITY:…]. Use this before guessing whether a vendor "
+            "already exists — create_expense with vendor_name does this "
+            "automatically, but this tool is here for a direct look."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
         "name": "create_customer",
         "description": (
             "Add a new customer in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
@@ -290,8 +309,15 @@ TOOL_SCHEMAS = [
         "name": "create_expense",
         "description": (
             "Record a bill/expense in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
-            "Global (HK), seo=Pacific Edge (US). WRITE OPERATION — first call "
-            "returns a confirmation prompt; call again with confirmed:true."
+            "Global (HK), seo=Pacific Edge (US). Pass vendor_id if you already "
+            "know it. Otherwise pass vendor_name: if it matches an existing "
+            "vendor exactly, that vendor is used silently; if it's similar to "
+            "an existing vendor, you'll be asked to pick 'existing' or 'new' "
+            "via vendor_choice (re-issue the call with that + confirmed:true); "
+            "if nothing similar exists, a new vendor is created automatically. "
+            "WRITE OPERATION — first call returns a confirmation prompt; call "
+            "again with confirmed:true to actually execute. NEVER pass "
+            "confirmed:true on the first attempt; require explicit user 'yes'."
         ),
         "input_schema": {
             "type": "object",
@@ -301,6 +327,14 @@ TOOL_SCHEMAS = [
                 "currency": {"type": "string", "default": "USD"},
                 "date": {"type": "string"},
                 "vendor_id": {"type": "string"},
+                "vendor_name": {
+                    "type": "string",
+                    "description": "Alternative to vendor_id — Goldman resolves or creates it.",
+                },
+                "vendor_choice": {
+                    "type": "string", "enum": ["existing", "new"],
+                    "description": "Only needed after Goldman flags a similar existing vendor.",
+                },
                 "description": {"type": "string"},
                 "account_id": {"type": "string"},
                 "confirmed": {"type": "boolean", "default": False},
@@ -657,6 +691,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _create_invoice(ctx, arguments)
     if name == "list_customers":
         return _list_customers(ctx, arguments)
+    if name == "list_vendors":
+        return _list_vendors(ctx, arguments)
     if name == "create_customer":
         return _create_customer(ctx, arguments)
     if name == "create_expense":
@@ -1184,7 +1220,7 @@ def _list_customers(ctx, args) -> str:
 
     def work(info):
         _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
-        contacts = contact_svc.list_contacts(per_page=min(limit, 200))
+        contacts = contact_svc.list_contacts(per_page=min(limit, 200), contact_type="customer")
         if not contacts:
             return f"No customers found."
         lines = [f"{len(contacts)} customer(s):"]
@@ -1192,6 +1228,21 @@ def _list_customers(ctx, args) -> str:
             lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
         return "\n".join(lines)
     return _zoho_guardrail("list_customers", ctx, args, work)
+
+
+def _list_vendors(ctx, args) -> str:
+    limit = int(args.get("limit", 50))
+
+    def work(info):
+        _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
+        contacts = contact_svc.list_contacts(per_page=min(limit, 200), contact_type="vendor")
+        if not contacts:
+            return "No vendors found."
+        lines = [f"{len(contacts)} vendor(s):"]
+        for c in contacts[:limit]:
+            lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
+        return "\n".join(lines)
+    return _zoho_guardrail("list_vendors", ctx, args, work)
 
 
 def _create_customer(ctx, args) -> str:
@@ -1216,19 +1267,94 @@ def _create_expense(ctx, args) -> str:
     if amount is None:
         return "create_expense error: amount is required."
 
+    args = dict(args)
+    vendor_id = (args.get("vendor_id") or "").strip()
+    vendor_name = (args.get("vendor_name") or "").strip()
+    pending_vendor_name = ""
+
+    if not vendor_id and vendor_name:
+        from goldman.zoho_safety import banner, log_audit, resolve_entity, UnknownEntityError
+        try:
+            info = resolve_entity(ctx.conn, args.get("entity") or "")
+        except UnknownEntityError:
+            info = None
+        if info is not None:
+            from goldman.vendor_match import match_vendor
+            _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
+            try:
+                candidates = contact_svc.list_contacts(contact_type="vendor")
+            except Exception as e:
+                return (
+                    f"{banner(info)}\n"
+                    f"Couldn't check Zoho's vendor list ({e}) — pass vendor_id "
+                    f"directly this time, or try again in a moment."
+                )
+            match = match_vendor(vendor_name, candidates)
+            if match.kind == "exact":
+                vendor_id = match.candidates[0].contact_id
+            elif match.kind == "similar":
+                choice = (args.get("vendor_choice") or "").strip().lower()
+                if choice == "existing":
+                    vendor_id = match.candidates[0].contact_id
+                elif choice == "new":
+                    pending_vendor_name = vendor_name
+                else:
+                    names = ", ".join(
+                        f"'{c.contact_name}' ({c.contact_id})" for c in match.candidates
+                    )
+                    log_audit(
+                        ctx.conn, info=info, tool_name="create_expense",
+                        arguments=args, status="blocked_ambiguous",
+                        result_summary=f"vendor name {vendor_name!r} similar to: {names}",
+                        channel_id=getattr(ctx, "chat_id", "") or "",
+                    )
+                    return (
+                        f"{banner(info)}\n"
+                        f"⚠️  VENDOR NEEDS A DECISION before I log this "
+                        f"{amount} {args.get('currency', 'USD')} expense "
+                        f"({args.get('description', 'no description')!r}).\n"
+                        f"   You said: '{vendor_name}'\n"
+                        f"   Existing similar vendor(s): {names}\n\n"
+                        f"Reply 'existing' to use {match.candidates[0].contact_name}, "
+                        f"or 'new' to create '{vendor_name}' as a separate vendor. "
+                        f"Say 'confirmed' too and I'll log the expense in the same step."
+                    )
+            else:
+                pending_vendor_name = vendor_name
+
+    args["vendor_id"] = vendor_id
+
     def work(info):
-        _, _, _, expense_svc = _zoho_services_for(ctx, info.slug)
+        nonlocal vendor_id
+        _, contact_svc, _, expense_svc = _zoho_services_for(ctx, info.slug)
         if not expense_svc:
             return "create_expense not yet supported in this build."
-        result = expense_svc.create_expense(
-            amount=float(amount),
-            date=args.get("date", ""),
-            description=args.get("description", ""),
-            vendor_id=args.get("vendor_id", ""),
-            account_id=args.get("account_id", ""),
-            currency_code=args.get("currency", "USD"),
-        )
-        return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')})."
+        created_vendor_note = ""
+        if not vendor_id and pending_vendor_name:
+            new_vendor = contact_svc.create_contact(
+                contact_name=pending_vendor_name, contact_type="vendor",
+            )
+            vendor_id = new_vendor.contact_id
+            created_vendor_note = (
+                f" Note: vendor '{pending_vendor_name}' ({vendor_id}) was "
+                f"already created in Zoho before this failed — reuse that "
+                f"vendor_id next time instead of creating a duplicate."
+            )
+        try:
+            result = expense_svc.create_expense(
+                amount=float(amount),
+                date=args.get("date", ""),
+                description=args.get("description", ""),
+                vendor_id=vendor_id or "",
+                account_id=args.get("account_id", ""),
+                currency=args.get("currency", "USD"),
+            )
+        except Exception as e:
+            if created_vendor_note:
+                raise RuntimeError(f"{e}.{created_vendor_note}") from e
+            raise
+        vendor_note = f" (new vendor {vendor_id})" if pending_vendor_name else ""
+        return f"Recorded expense {result.expense_id} ({amount} {args.get('currency', 'USD')}){vendor_note}."
     return _zoho_guardrail("create_expense", ctx, args, work)
 
 

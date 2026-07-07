@@ -247,3 +247,25 @@ def test_zoho_call_with_no_entity_is_refused():
     assert "refused" in out.lower()
     assert "amz-expert global" in out.lower()
     assert "pacific edge" in out.lower()
+
+
+def test_confirmation_prompt_flags_new_vendor_by_name():
+    info = EntityInfo(slug="amzg",
+                       legal_name="AMZ-Expert Global Limited",
+                       org_id="876247837")
+    prompt = confirmation_prompt(info, "create_expense", {
+        "amount": 5900, "currency": "ILS", "vendor_name": "Bezeq",
+        "description": "Utility bill",
+    })
+    assert "Bezeq" in prompt
+    assert "NEW" in prompt
+
+
+def test_confirmation_prompt_shows_known_vendor_id_unchanged():
+    info = EntityInfo(slug="amzg",
+                       legal_name="AMZ-Expert Global Limited",
+                       org_id="876247837")
+    prompt = confirmation_prompt(info, "create_expense", {
+        "amount": 5900, "currency": "ILS", "vendor_id": "V-1",
+    })
+    assert "vendor=V-1" in prompt
