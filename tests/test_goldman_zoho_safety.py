@@ -219,6 +219,51 @@ def test_mark_invoice_paid_skips_already_paid_invoice():
     fake_svc.record_payment.assert_not_called()
 
 
+def test_send_invoice_resolves_invoice_number_to_id():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_svc = MagicMock()
+    fake_svc.find_by_number.return_value = MagicMock(invoice_id="8399034000000260001")
+    fake_svc.send_invoice.return_value = True
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="send_invoice",
+            arguments={"entity": "seo", "invoice_id": "INV-22", "confirmed": True},
+        )
+    # "INV-22" is a display number → resolved to the numeric id before sending.
+    fake_svc.find_by_number.assert_called_once_with("INV-22")
+    fake_svc.send_invoice.assert_called_once_with("8399034000000260001")
+    assert "INV-22" in out
+
+
+def test_send_invoice_passes_numeric_id_without_lookup():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_svc = MagicMock()
+    fake_svc.send_invoice.return_value = True
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="send_invoice",
+            arguments={"entity": "seo", "invoice_id": "8399034000000260001", "confirmed": True},
+        )
+    fake_svc.find_by_number.assert_not_called()
+    fake_svc.send_invoice.assert_called_once_with("8399034000000260001")
+
+
+def test_send_invoice_unknown_number_reports_not_found():
+    ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
+    fake_svc = MagicMock()
+    fake_svc.find_by_number.return_value = None
+    with patch("goldman.bot.tools._zoho_services_for",
+                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+        out = execute_tool(
+            ctx=ctx, name="send_invoice",
+            arguments={"entity": "seo", "invoice_id": "INV-999", "confirmed": True},
+        )
+    assert "no invoice matching" in out.lower()
+    fake_svc.send_invoice.assert_not_called()
+
+
 def test_list_customers_includes_entity_banner_no_confirmation():
     ctx = _ctx_with_entity("amzg", "AMZ-Expert Global Limited", "876247837")
     fake_svc = MagicMock()

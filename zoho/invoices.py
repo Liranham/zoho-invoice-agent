@@ -58,6 +58,19 @@ class InvoiceService:
         inv = data.get("invoice")
         return self._parse(inv) if inv else None
 
+    def find_by_number(self, invoice_number: str) -> Invoice | None:
+        """Look up an invoice by its human invoice number (e.g. 'INV-22').
+
+        Zoho's per-invoice endpoints key on the internal numeric invoice_id,
+        NOT the display number — passing the number 404s. This resolves a
+        number to the real record so callers can accept either form.
+        """
+        data = self.client.get(
+            "invoices", params={"invoice_number": invoice_number}
+        )
+        invoices = data.get("invoices", [])
+        return self._parse(invoices[0]) if invoices else None
+
     def create_invoice(
         self,
         customer_id: str,

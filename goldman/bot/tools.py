@@ -1209,7 +1209,10 @@ def _mark_invoice_paid(ctx, args) -> str:
 
     def work(info):
         inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
-        invoice = inv_svc.get_invoice(invoice_id)
+        resolved_id = _resolve_invoice_id(inv_svc, str(invoice_id))
+        if not resolved_id:
+            return f"mark_invoice_paid error: no invoice matching {invoice_id!r} found."
+        invoice = inv_svc.get_invoice(resolved_id)
         if invoice is None:
             return f"invoice {invoice_id} not found."
         if (invoice.status or "").lower() == "paid" or (invoice.balance or 0) <= 0:
@@ -1223,7 +1226,7 @@ def _mark_invoice_paid(ctx, args) -> str:
         amt = args.get("amount")
         amount = float(amt) if amt is not None else float(invoice.balance or invoice.total)
         payment = inv_svc.record_payment(
-            invoice_id=invoice_id,
+            invoice_id=resolved_id,
             customer_id=customer_id,
             amount=amount,
             account_id=account_id,
@@ -1438,17 +1441,37 @@ def _create_expense(ctx, args) -> str:
     return _zoho_guardrail("create_expense", ctx, args, work)
 
 
+def _resolve_invoice_id(inv_svc, ref: str) -> str | None:
+    """Accept either a Zoho internal invoice_id (all digits) or a human
+    invoice number ('INV-22') and return the internal id. Zoho's per-invoice
+    endpoints 404 when handed the display number, so anything that isn't a
+    bare digit string is looked up by number first."""
+    ref = (ref or "").strip()
+    if not ref:
+        return None
+    if ref.isdigit():
+        return ref
+    inv = inv_svc.find_by_number(ref)
+    return inv.invoice_id if inv else None
+
+
 def _send_invoice(ctx, args) -> str:
-    invoice_id = (args.get("invoice_id") or "").strip()
-    if not invoice_id:
+    ref = (args.get("invoice_id") or "").strip()
+    if not ref:
         return "send_invoice error: invoice_id is required."
 
     def work(info):
         inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
+        invoice_id = _resolve_invoice_id(inv_svc, ref)
+        if not invoice_id:
+            return (
+                f"send_invoice error: no invoice matching {ref!r} found in this "
+                f"company — check the number/id and the entity."
+            )
         ok = inv_svc.send_invoice(invoice_id)
         return (
-            f"Sent invoice {invoice_id} ✓" if ok
-            else f"Zoho rejected the send request for invoice {invoice_id}."
+            f"Emailed invoice {ref} to its customer ✓" if ok
+            else f"Zoho rejected the send request for invoice {ref}."
         )
     return _zoho_guardrail("send_invoice", ctx, args, work)
 

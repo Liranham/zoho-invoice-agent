@@ -148,6 +148,29 @@ def test_record_payment_posts_customerpayment_body():
     assert body["invoices"] == [{"invoice_id": "inv_9", "amount_applied": 2993.89}]
 
 
+def test_find_by_number_returns_match():
+    svc, client = _make_service(
+        {
+            "get": {
+                "invoices": [
+                    {"invoice_id": "8399034000000260001", "invoice_number": "INV-22",
+                     "status": "paid", "customer_name": "Gilad Weinberg",
+                     "date": "2026-07-06", "due_date": "2026-07-06",
+                     "total": 2993.89, "balance": 0.0, "currency_code": "USD"}
+                ]
+            }
+        }
+    )
+    inv = svc.find_by_number("INV-22")
+    assert inv.invoice_id == "8399034000000260001"
+    client.get.assert_called_once_with("invoices", params={"invoice_number": "INV-22"})
+
+
+def test_find_by_number_none_when_absent():
+    svc, client = _make_service({"get": {"invoices": []}})
+    assert svc.find_by_number("INV-999") is None
+
+
 def test_get_invoice_captures_customer_id():
     svc, _ = _make_service(
         {
