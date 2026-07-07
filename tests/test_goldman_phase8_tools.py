@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -79,6 +80,34 @@ def test_list_customers_filters_to_customer_type():
         execute_tool(ctx=ctx, name="list_customers", arguments={"entity": "amzg"})
 
     contact_svc.list_contacts.assert_called_once_with(per_page=50, contact_type="customer")
+
+
+def test_list_vendors_is_in_bot_registry():
+    names = {t["name"] for t in TOOL_SCHEMAS}
+    assert "list_vendors" in names
+
+
+def test_list_vendors_is_in_mcp_registry():
+    names = {t["name"] for t in MCP_TOOLS}
+    assert "list_vendors" in names
+
+
+def test_list_vendors_filters_to_vendor_type():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = [
+        SimpleNamespace(contact_id="V-1", contact_name="Akiva CPA", email=""),
+    ]
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), MagicMock())):
+        out = execute_tool(ctx=ctx, name="list_vendors", arguments={"entity": "amzg"})
+
+    contact_svc.list_contacts.assert_called_once_with(per_page=50, contact_type="vendor")
+    assert "Akiva CPA" in out
 
 
 def test_search_emails_uses_gmail_client(monkeypatch):

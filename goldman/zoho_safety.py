@@ -35,6 +35,7 @@ WRITE_TOOLS = {
 READ_TOOLS = {
     "list_invoices",
     "list_customers",
+    "list_vendors",
     "list_pending_confirmations",
 }
 

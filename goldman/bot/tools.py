@@ -267,6 +267,25 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "list_vendors",
+        "description": (
+            "List Zoho Books vendors (contact_type=vendor). HARD MAPPING: "
+            "amzg=AMZ-Expert Global Limited (HK), seo=Pacific Edge Outsourcing "
+            "LLC (US). Read-only; no confirmation needed. Result is stamped "
+            "with [ENTITY:…]. Use this before guessing whether a vendor "
+            "already exists — create_expense with vendor_name does this "
+            "automatically, but this tool is here for a direct look."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
         "name": "create_customer",
         "description": (
             "Add a new customer in Zoho Books. HARD MAPPING: amzg=AMZ-Expert "
@@ -657,6 +676,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _create_invoice(ctx, arguments)
     if name == "list_customers":
         return _list_customers(ctx, arguments)
+    if name == "list_vendors":
+        return _list_vendors(ctx, arguments)
     if name == "create_customer":
         return _create_customer(ctx, arguments)
     if name == "create_expense":
@@ -1192,6 +1213,21 @@ def _list_customers(ctx, args) -> str:
             lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
         return "\n".join(lines)
     return _zoho_guardrail("list_customers", ctx, args, work)
+
+
+def _list_vendors(ctx, args) -> str:
+    limit = int(args.get("limit", 50))
+
+    def work(info):
+        _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
+        contacts = contact_svc.list_contacts(per_page=min(limit, 200), contact_type="vendor")
+        if not contacts:
+            return "No vendors found."
+        lines = [f"{len(contacts)} vendor(s):"]
+        for c in contacts[:limit]:
+            lines.append(f"  {c.contact_id} | {c.contact_name} | {c.email}")
+        return "\n".join(lines)
+    return _zoho_guardrail("list_vendors", ctx, args, work)
 
 
 def _create_customer(ctx, args) -> str:

@@ -311,6 +311,18 @@ TOOLS = [
         },
     },
     {
+        "name": "list_vendors",
+        "description": "List Zoho Books vendors for the given entity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "limit": {"type": "integer", "default": 50},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
         "name": "create_customer",
         "description": (
             "Add a new Zoho Books customer. HARD MAPPING: amzg=AMZ-Expert "
@@ -741,7 +753,7 @@ def _run_tool(name: str, arguments: dict) -> str:
     AGENT_TOOLS = {
         "search_emails", "read_email_thread", "draft_email",
         "list_drive_folder", "read_drive_file", "ensure_drive_folder",
-        "create_invoice", "list_customers", "create_customer",
+        "create_invoice", "list_customers", "list_vendors", "create_customer",
         "create_expense", "send_invoice", "mark_invoice_paid", "zoho_audit_trail",
         "list_team_members", "hours_worked", "set_member_rate",
         "payroll_summary", "payroll_anomalies",
