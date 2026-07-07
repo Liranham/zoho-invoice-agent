@@ -13,3 +13,6 @@ scripts/credentials.json
 scripts/token.json
 credentials.json
 token.json
+
+# Git worktrees (superpowers:using-git-worktrees)
+.worktrees/
