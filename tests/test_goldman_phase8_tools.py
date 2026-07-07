@@ -66,6 +66,21 @@ def test_list_customers_validates_entity():
     assert "pacific edge" in result.lower()
 
 
+def test_list_customers_filters_to_customer_type():
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _entity_row()
+
+    contact_svc = MagicMock()
+    contact_svc.list_contacts.return_value = []
+
+    with patch("goldman.bot.tools._zoho_services_for",
+               return_value=(MagicMock(), contact_svc, MagicMock(), MagicMock())):
+        execute_tool(ctx=ctx, name="list_customers", arguments={"entity": "amzg"})
+
+    contact_svc.list_contacts.assert_called_once_with(per_page=50, contact_type="customer")
+
+
 def test_search_emails_uses_gmail_client(monkeypatch):
     monkeypatch.setenv("GMAIL_CREDENTIALS_B64", "stub")
     monkeypatch.setenv("GMAIL_TOKEN_B64", "stub")

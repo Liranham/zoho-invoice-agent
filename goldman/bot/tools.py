@@ -1184,7 +1184,7 @@ def _list_customers(ctx, args) -> str:
 
     def work(info):
         _, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
-        contacts = contact_svc.list_contacts(per_page=min(limit, 200))
+        contacts = contact_svc.list_contacts(per_page=min(limit, 200), contact_type="customer")
         if not contacts:
             return f"No customers found."
         lines = [f"{len(contacts)} customer(s):"]
