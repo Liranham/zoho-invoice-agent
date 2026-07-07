@@ -160,6 +160,28 @@ TOOL_SCHEMAS = [
             "required": ["file_id"],
         },
     },
+    {
+        "name": "ensure_drive_folder",
+        "description": (
+            "Find-or-create a nested folder path under an entity's Drive backup "
+            "folder (e.g. year/month), creating any missing segments. Use this "
+            "instead of telling Liran to create the folder himself — you have "
+            "the same folder-creation capability the automatic file-filing "
+            "pipeline uses, just not a way to upload a file's bytes from chat. "
+            "HARD MAPPING: amzg=AMZ-Expert Global (HK), seo=Pacific Edge (US)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "path_segments": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Segments under the entity's root folder, in order, e.g. ['2026', 'July'].",
+                },
+            },
+            "required": ["entity", "path_segments"],
+        },
+    },
     # ---- Phase 8/9: Zoho Books (per-entity, guardrailed) ----
     # HARD MAPPING — applied to every Zoho tool below:
     #   amzg = AMZ-Expert Global Limited (HK)     — Zoho org 876247837
@@ -628,6 +650,8 @@ def execute_tool(*, ctx: ToolContext, name: str, arguments: dict) -> str:
         return _list_drive_folder(ctx, arguments)
     if name == "read_drive_file":
         return _read_drive_file(ctx, arguments)
+    if name == "ensure_drive_folder":
+        return _ensure_drive_folder(ctx, arguments)
     # Phase 8: Zoho
     if name == "create_invoice":
         return _create_invoice(ctx, arguments)
@@ -936,6 +960,26 @@ def _read_drive_file(ctx, args) -> str:
         )
     except Exception as e:
         return f"Drive unavailable: {e}"
+
+
+def _ensure_drive_folder(ctx, args) -> str:
+    entity_slug = (args.get("entity") or "").strip().lower()
+    segments = [s for s in (args.get("path_segments") or []) if s]
+    if not entity_slug or not segments:
+        return "ensure_drive_folder error: entity and path_segments are required."
+    ent = EntityRepository(ctx.conn).get_by_slug(entity_slug)
+    if not ent or not ent.legal_name:
+        return f"ensure_drive_folder error: unknown entity {entity_slug!r}."
+    try:
+        from goldman.drive.folders import ensure_path
+        client, root = _drive_client()
+        folder_id = ensure_path(client, [ent.legal_name, *segments], root_id=root or None)
+    except Exception as e:
+        return f"Drive unavailable: {e}"
+    return (
+        f"Folder ready: {ent.legal_name} / {' / '.join(segments)} "
+        f"(folder_id={folder_id})."
+    )
 
 
 def _format_sheet_rows(rows) -> str:

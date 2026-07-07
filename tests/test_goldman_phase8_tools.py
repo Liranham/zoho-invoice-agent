@@ -104,6 +104,51 @@ def test_list_drive_folder_uses_drive_client(monkeypatch):
     assert "BR.pdf" in out
 
 
+def test_ensure_drive_folder_is_in_bot_registry():
+    names = {t["name"] for t in TOOL_SCHEMAS}
+    assert "ensure_drive_folder" in names
+
+
+def test_ensure_drive_folder_is_in_mcp_registry():
+    names = {t["name"] for t in MCP_TOOLS}
+    assert "ensure_drive_folder" in names
+
+
+def _entity_row(slug="amzg", legal_name="AMZ-Expert Global Limited"):
+    # Matches goldman_db.entities._SELECT_COLS column order.
+    return (
+        "11111111-1111-1111-1111-111111111111", slug, legal_name, "HK",
+        None, "USD", "876247837", "AMZG", None, None, None, None,
+    )
+
+
+def test_ensure_drive_folder_creates_missing_segments(monkeypatch):
+    monkeypatch.setenv("GOLDMAN_DRIVE_ROOT_FOLDER_ID", "root-x")
+    ctx = MagicMock()
+    cur = ctx.conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = _entity_row()
+
+    fake_client = MagicMock()
+    with patch("goldman.bot.tools._drive_client",
+               return_value=(fake_client, "root-x")), \
+         patch("goldman.drive.folders.ensure_path", return_value="leaf-id") as ensure_mock:
+        out = execute_tool(
+            ctx=ctx, name="ensure_drive_folder",
+            arguments={"entity": "amzg", "path_segments": ["2026", "July"]},
+        )
+    ensure_mock.assert_called_once_with(
+        fake_client, ["AMZ-Expert Global Limited", "2026", "July"], root_id="root-x",
+    )
+    assert "leaf-id" in out
+    assert "AMZ-Expert Global Limited" in out
+
+
+def test_ensure_drive_folder_requires_entity_and_segments():
+    ctx = MagicMock()
+    out = execute_tool(ctx=ctx, name="ensure_drive_folder", arguments={})
+    assert "required" in out.lower() or "error" in out.lower()
+
+
 def _sheet_client(tabs, rows):
     fake = MagicMock()
     fake.get_file_metadata.return_value = {

@@ -247,6 +247,25 @@ TOOLS = [
             "required": ["file_id"],
         },
     },
+    {
+        "name": "ensure_drive_folder",
+        "description": (
+            "Find-or-create a nested folder path under an entity's Drive backup "
+            "folder (e.g. year/month), creating any missing segments. "
+            "HARD MAPPING: amzg=AMZ-Expert Global (HK), seo=Pacific Edge (US)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "enum": ["amzg", "seo"]},
+                "path_segments": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Segments under the entity's root folder, in order, e.g. ['2026', 'July'].",
+                },
+            },
+            "required": ["entity", "path_segments"],
+        },
+    },
     # ---- Phase 8: Zoho Books tools (per-entity) ----
     {
         "name": "create_invoice",
@@ -721,7 +740,7 @@ def _run_tool(name: str, arguments: dict) -> str:
     # Phase 8/9/10: route via the bot's execute_tool so MCP + Telegram share dispatch.
     AGENT_TOOLS = {
         "search_emails", "read_email_thread", "draft_email",
-        "list_drive_folder", "read_drive_file",
+        "list_drive_folder", "read_drive_file", "ensure_drive_folder",
         "create_invoice", "list_customers", "create_customer",
         "create_expense", "send_invoice", "mark_invoice_paid", "zoho_audit_trail",
         "list_team_members", "hours_worked", "set_member_rate",
