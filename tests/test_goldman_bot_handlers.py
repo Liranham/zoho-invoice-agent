@@ -57,6 +57,13 @@ def test_entity_from_text_matches_full_and_partial_names():
     assert _entity_from_text("it's for the HK company", ents) == "amzg"
 
 
+def test_entity_from_text_matches_amz_expert_bare_nickname():
+    # The exact phrasing from the real chat that used to be ignored: replying
+    # with just the company nickname (no "Global") to a pending-doc prompt.
+    assert _entity_from_text("amz-expert", _entities()) == "amzg"
+    assert _entity_from_text("amz expert", _entities()) == "amzg"
+
+
 def test_entity_from_text_matches_bare_slug():
     assert _entity_from_text("put it on seo", _entities()) == "seo"
 

@@ -88,7 +88,10 @@ def _entity_from_text(text: str, entities: list):
     # Explicit nicknames the user actually uses for each company.
     aliases = {
         "seo": ["pacific edge", "pacific-edge", "peo", "us llc", "wyoming"],
-        "amzg": ["amz-expert global", "amz expert global", "amzg", "hong kong", "hk company"],
+        "amzg": [
+            "amz-expert global", "amz expert global", "amz-expert", "amz expert",
+            "amzexpert", "amzg", "hong kong", "hk company",
+        ],
     }
     for e in entities:
         if not e.slug:
