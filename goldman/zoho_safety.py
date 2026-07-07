@@ -130,9 +130,17 @@ def _describe_action(tool_name: str, args: dict) -> str:
             f"deposit_account={args.get('account_id', '?')})"
         )
     if tool_name == "create_expense":
+        vendor_id = args.get("vendor_id")
+        vendor_name = args.get("vendor_name")
+        if vendor_id:
+            vendor_desc = vendor_id
+        elif vendor_name:
+            vendor_desc = f"{vendor_name!r} (NEW — will be created)"
+        else:
+            vendor_desc = "?"
         return (
             f"CREATE EXPENSE for {args.get('amount', '?')} "
-            f"{args.get('currency', 'USD')}, vendor={args.get('vendor_id', '?')}, "
+            f"{args.get('currency', 'USD')}, vendor={vendor_desc}, "
             f"description={args.get('description', '?')!r}"
         )
     if tool_name == "create_customer":
