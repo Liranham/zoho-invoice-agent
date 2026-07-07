@@ -64,7 +64,13 @@ class ZohoClient:
 
             if not resp.ok:
                 logger.error(f"HTTP {resp.status_code}: {resp.text}")
-            resp.raise_for_status()
+                # Surface Zoho's actual complaint (e.g. "no contact persons
+                # associated"), not a bare "400 Client Error", so callers and
+                # the audit log can act on it.
+                raise RuntimeError(
+                    f"Zoho HTTP {resp.status_code} for {method} {endpoint}: "
+                    f"{resp.text[:400]}"
+                )
             data = resp.json()
 
             if data.get("code") != 0:

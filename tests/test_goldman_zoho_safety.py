@@ -219,35 +219,47 @@ def test_mark_invoice_paid_skips_already_paid_invoice():
     fake_svc.record_payment.assert_not_called()
 
 
-def test_send_invoice_resolves_invoice_number_to_id():
+def test_send_invoice_resolves_number_and_attaches_recipients():
     ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
     fake_svc = MagicMock()
     fake_svc.find_by_number.return_value = MagicMock(invoice_id="8399034000000260001")
+    fake_svc.get_invoice.return_value = MagicMock(customer_id="C1")
     fake_svc.send_invoice.return_value = True
+    fake_contact = MagicMock()
+    fake_contact.get_send_recipients.return_value = {
+        "contact_persons": ["cp1"], "to_mail_ids": ["gilad@example.com"],
+    }
     with patch("goldman.bot.tools._zoho_services_for",
-                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
+                return_value=(fake_svc, fake_contact, MagicMock(), MagicMock())):
         out = execute_tool(
             ctx=ctx, name="send_invoice",
             arguments={"entity": "seo", "invoice_id": "INV-22", "confirmed": True},
         )
     # "INV-22" is a display number → resolved to the numeric id before sending.
     fake_svc.find_by_number.assert_called_once_with("INV-22")
-    fake_svc.send_invoice.assert_called_once_with("8399034000000260001")
-    assert "INV-22" in out
+    fake_contact.get_send_recipients.assert_called_once_with("C1")
+    args, kwargs = fake_svc.send_invoice.call_args
+    assert args[0] == "8399034000000260001"
+    assert kwargs["contact_persons"] == ["cp1"]
+    assert kwargs["to_mail_ids"] == ["gilad@example.com"]
+    assert "gilad@example.com" in out
 
 
-def test_send_invoice_passes_numeric_id_without_lookup():
+def test_send_invoice_passes_numeric_id_without_number_lookup():
     ctx = _ctx_with_entity("seo", "Pacific Edge Outsourcing LLC", "914942331")
     fake_svc = MagicMock()
+    fake_svc.get_invoice.return_value = MagicMock(customer_id="C1")
     fake_svc.send_invoice.return_value = True
+    fake_contact = MagicMock()
+    fake_contact.get_send_recipients.return_value = {"contact_persons": [], "to_mail_ids": ["g@x.com"]}
     with patch("goldman.bot.tools._zoho_services_for",
-                return_value=(fake_svc, MagicMock(), MagicMock(), MagicMock())):
-        out = execute_tool(
+                return_value=(fake_svc, fake_contact, MagicMock(), MagicMock())):
+        execute_tool(
             ctx=ctx, name="send_invoice",
             arguments={"entity": "seo", "invoice_id": "8399034000000260001", "confirmed": True},
         )
     fake_svc.find_by_number.assert_not_called()
-    fake_svc.send_invoice.assert_called_once_with("8399034000000260001")
+    assert fake_svc.send_invoice.call_args.args[0] == "8399034000000260001"
 
 
 def test_send_invoice_unknown_number_reports_not_found():

@@ -1461,16 +1461,31 @@ def _send_invoice(ctx, args) -> str:
         return "send_invoice error: invoice_id is required."
 
     def work(info):
-        inv_svc, _, _, _ = _zoho_services_for(ctx, info.slug)
+        inv_svc, contact_svc, _, _ = _zoho_services_for(ctx, info.slug)
         invoice_id = _resolve_invoice_id(inv_svc, ref)
         if not invoice_id:
             return (
                 f"send_invoice error: no invoice matching {ref!r} found in this "
                 f"company — check the number/id and the entity."
             )
-        ok = inv_svc.send_invoice(invoice_id)
+        # Zoho's /email 400s with no recipients — attach the customer's
+        # contact persons + email addresses so the send succeeds.
+        recipients: dict = {}
+        try:
+            inv = inv_svc.get_invoice(invoice_id)
+            customer_id = inv.customer_id if inv else None
+            if customer_id:
+                recipients = contact_svc.get_send_recipients(customer_id)
+        except Exception:
+            recipients = {}
+        ok = inv_svc.send_invoice(
+            invoice_id,
+            contact_persons=recipients.get("contact_persons"),
+            to_mail_ids=recipients.get("to_mail_ids"),
+        )
+        who = ", ".join(recipients.get("to_mail_ids") or []) or "the customer on file"
         return (
-            f"Emailed invoice {ref} to its customer ✓" if ok
+            f"Emailed invoice {ref} to {who} ✓" if ok
             else f"Zoho rejected the send request for invoice {ref}."
         )
     return _zoho_guardrail("send_invoice", ctx, args, work)

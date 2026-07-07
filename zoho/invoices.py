@@ -114,9 +114,30 @@ class InvoiceService:
         logger.info("Invoice deleted: %s", invoice_id)
         return True
 
-    def send_invoice(self, invoice_id: str) -> bool:
-        """Email an invoice to the customer."""
-        self.client.post(f"invoices/{invoice_id}/email")
+    def send_invoice(
+        self,
+        invoice_id: str,
+        contact_persons: list[str] | None = None,
+        to_mail_ids: list[str] | None = None,
+        subject: str = "",
+        body: str = "",
+    ) -> bool:
+        """Email an invoice to the customer.
+
+        Zoho's /email endpoint 400s ("no contact persons associated") when
+        the invoice has no recipients, so pass the customer's contact_persons
+        and/or to_mail_ids explicitly.
+        """
+        payload: dict = {}
+        if contact_persons:
+            payload["contact_persons"] = contact_persons
+        if to_mail_ids:
+            payload["to_mail_ids"] = to_mail_ids
+        if subject:
+            payload["subject"] = subject
+        if body:
+            payload["body"] = body
+        self.client.post(f"invoices/{invoice_id}/email", json=payload)
         logger.info("Invoice emailed: %s", invoice_id)
         return True
 

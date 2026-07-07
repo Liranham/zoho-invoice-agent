@@ -84,6 +84,21 @@ class ContactService:
         persons.sort(key=lambda p: not p.get("is_primary_contact"))
         return [p["contact_person_id"] for p in persons if p.get("contact_person_id")]
 
+    def get_send_recipients(self, customer_id: str) -> dict:
+        """One GET → the recipients an invoice email needs, primary first:
+        {'contact_persons': [ids...], 'to_mail_ids': [emails...]}.
+        Zoho's /email 400s with no recipients; passing these fixes it.
+        """
+        data = self.client.get(f"contacts/{customer_id}")
+        contact = data.get("contact", {})
+        persons = contact.get("contact_persons", [])
+        persons.sort(key=lambda p: not p.get("is_primary_contact"))
+        ids = [p["contact_person_id"] for p in persons if p.get("contact_person_id")]
+        emails = [p["email"] for p in persons if p.get("email")]
+        if not emails and contact.get("email"):
+            emails = [contact["email"]]
+        return {"contact_persons": ids, "to_mail_ids": emails}
+
     def create_contact(
         self,
         contact_name: str,

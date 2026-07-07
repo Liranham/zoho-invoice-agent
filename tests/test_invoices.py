@@ -148,6 +148,15 @@ def test_record_payment_posts_customerpayment_body():
     assert body["invoices"] == [{"invoice_id": "inv_9", "amount_applied": 2993.89}]
 
 
+def test_send_invoice_posts_recipients_in_body():
+    svc, client = _make_service({"post": {"code": 0}})
+    svc.send_invoice("inv_9", contact_persons=["cp1", "cp2"], to_mail_ids=["a@b.com"])
+    assert client.post.call_args.args[0] == "invoices/inv_9/email"
+    body = client.post.call_args.kwargs["json"]
+    assert body["contact_persons"] == ["cp1", "cp2"]
+    assert body["to_mail_ids"] == ["a@b.com"]
+
+
 def test_find_by_number_returns_match():
     svc, client = _make_service(
         {
