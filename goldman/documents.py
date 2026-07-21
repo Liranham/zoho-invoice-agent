@@ -88,7 +88,22 @@ def extract_text_from_xlsx(file_path: Path) -> str:
 VISION_OCR_MIN_CHARS = 50  # threshold below which we fall back to vision OCR
 
 
+def _strip_nul(text: str) -> str:
+    """Postgres text columns reject NUL (0x00) outright.
+
+    pypdf decodes some font encodings into strings carrying embedded NULs, and
+    the chunk INSERT then died with psycopg.DataError — taking the whole
+    Telegram reply with it. Strip them at the extraction boundary so the text,
+    its chunks and its summary are all storable.
+    """
+    return text.replace("\x00", "") if text else text
+
+
 def _read_text(file_path: Path, mime_type: str) -> str:
+    return _strip_nul(_extract_text(file_path, mime_type))
+
+
+def _extract_text(file_path: Path, mime_type: str) -> str:
     # Trust the file's actual bytes over its (possibly wrong) extension.
     # A screenshot sent through Telegram can reach here named 'document.pdf';
     # without this, pypdf would choke on JPEG data and crash the whole reply.

@@ -87,6 +87,47 @@ def test_upload_extracts_text_from_pdf(monkeypatch, tmp_path):
         assert "Extracted PDF text." in chunk_text_arg
 
 
+def test_upload_strips_nul_bytes_from_extracted_pdf_text(tmp_path):
+    """Postgres text columns reject NUL (0x00).
+
+    pypdf decodes some fonts into strings carrying embedded NULs. Before this
+    guard the chunk INSERT raised psycopg.DataError and killed the whole
+    Telegram reply — the invoice was never filed and Liran just saw an error.
+    """
+    f = tmp_path / "invoice.pdf"
+    f.write_bytes(b"%PDF-1.4\n")
+
+    with patch("goldman.documents.extract_text_from_pdf") as mock_extract:
+        mock_extract.return_value = "Invoice BBDEC7B1-0053\x00 total USD 240.00 " * 3
+
+        storage = MagicMock()
+        doc_repo = MagicMock()
+        doc_repo.insert.return_value = uuid4()
+        chunk_repo = MagicMock()
+        chunk_repo.insert.return_value = uuid4()
+        summariser = MagicMock()
+        summariser.summarise.return_value = "An invoice."
+
+        upload_document(
+            file_path=f,
+            entity_id=uuid4(),
+            entity_slug="amzg",
+            storage=storage,
+            doc_repo=doc_repo,
+            chunk_repo=chunk_repo,
+            summariser=summariser,
+            bucket="goldman-documents",
+        )
+
+        assert chunk_repo.insert.call_count >= 1
+        for call in chunk_repo.insert.call_args_list:
+            assert "\x00" not in call.kwargs["text"]
+        # The real content survives — we strip the NUL, not the text around it.
+        assert "BBDEC7B1-0053" in chunk_repo.insert.call_args_list[0].kwargs["text"]
+        # The summariser must not be handed NULs either.
+        assert "\x00" not in summariser.summarise.call_args.args[0]
+
+
 def test_upload_pack_uses_override_path_and_passes_pack_metadata(tmp_path):
     f = tmp_path / "us_llc_tax_v1.md"
     f.write_text("# US LLC Tax v1\n\n## Entity classification\n\nLorem ipsum.")

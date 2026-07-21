@@ -453,7 +453,23 @@ def _session_id_for_today(chat_id: int) -> str:
     return f"tg-{chat_id}-{datetime.utcnow().strftime('%Y%m%d')}"
 
 
-async def _run_goldman_reply(update, chat_id, llm, user_text, doc_context=None):
+def pending_doc_prompt(filename: str, user_text: str) -> str:
+    """Frame a turn where Goldman is still holding an unfiled upload.
+
+    Without this the agent sees only the bare text and confidently replies
+    "I don't see any file attached" — seconds after saying "Got <filename>".
+    """
+    return (
+        f'[You are holding an uploaded file named "{filename}". It reached you '
+        f"intact; you simply could not tell which company it belongs to. Never "
+        f"tell the user no file was attached. If their message does not name "
+        f"the company, ask which one it is (Pacific Edge or AMZ-Expert Global).]"
+        f"\n\nThe user's message: {user_text}"
+    )
+
+
+async def _run_goldman_reply(update, chat_id, llm, user_text, doc_context=None,
+                             pending_filename=None):
     """Run Goldman's agent loop for one user message and send the reply.
 
     doc_context: optional {"filename", "text"}. When present, the file's
@@ -497,6 +513,8 @@ async def _run_goldman_reply(update, chat_id, llm, user_text, doc_context=None):
                 f"The user's message: "
                 f"{user_text or '(no caption — tell me what this is and what I should do about it.)'}"
             )
+        elif pending_filename and messages and messages[-1]["role"] == "user":
+            messages[-1]["content"] = pending_doc_prompt(pending_filename, user_text)
 
         ctx = ToolContext(
             conn=conn, entity_slug=entity_slug,
@@ -532,6 +550,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # to that file and finish the job — instead of treating the two messages
     # as unrelated.
     pending = _PENDING_DOCS.get(chat_id)
+    pending_filename = None
     if pending and (time.time() - pending["ts"] < _PENDING_TTL_SECONDS):
         with app_conn() as conn:
             entities = EntityRepository(conn).list_all()
@@ -547,6 +566,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 force_entity_slug=slug,
             )
             return
+        # Still holding the file. Keep it, and make sure the agent knows it
+        # exists — otherwise it denies the attachment it just acknowledged.
+        pending_filename = pending["original_filename"]
     elif pending:
         # Expired — forget it so we don't file something the user moved on from.
         _PENDING_DOCS.pop(chat_id, None)
@@ -562,7 +584,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif rec:
         _RECENT_DOCS.pop(chat_id, None)
 
-    await _run_goldman_reply(update, chat_id, llm, user_text, doc_context=doc_context)
+    await _run_goldman_reply(update, chat_id, llm, user_text, doc_context=doc_context,
+                             pending_filename=pending_filename)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

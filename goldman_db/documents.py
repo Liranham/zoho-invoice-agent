@@ -130,6 +130,9 @@ class DocumentChunkRepository:
         chunk_index: int,
         text: str,
     ) -> UUID:
+        # Postgres rejects NUL (0x00) in text columns. Callers should already
+        # have stripped them, but one bad chunk must never kill a whole reply.
+        text = text.replace("\x00", "") if text else text
         with self.conn.cursor() as cur:
             cur.execute(
                 """
